@@ -333,6 +333,20 @@ cmd_start() {
     exec "$agent" $extra
 }
 
+# ---------------------------------------------------------------------------
+# TESTING THIS SCRIPT MUST NOT DISTURB A RUNNING MULTIPLEXER
+# ---------------------------------------------------------------------------
+# `worktree create` and `workspace close` are both flagged `changes_ui=true` by
+# herdr: they spawn and kill panes in the session the human is looking at right
+# now. Exercising create/clean against a live server therefore rearranges
+# somebody's screen mid-keystroke — which is exactly what happened once.
+#
+# Set AGENT_WORKTREES_NO_HERDR=1 to exercise every path with git only.
+have_herdr() {
+    [[ -n "${AGENT_WORKTREES_NO_HERDR:-}" ]] && return 1
+    command -v herdr >/dev/null 2>&1
+}
+
 cmd_new() {
     local name="${1:-}"
     local wanted="${2:-}"
@@ -378,8 +392,12 @@ cmd_new() {
     # `agent` commands. Creating the directory behind its back works, but the new
     # session will not open in a window. So we hand it the job and only add what
     # it does not do: a fresh remote base and shared agent memory.
-    if command -v herdr >/dev/null 2>&1; then
-        herdr worktree create --cwd "$MAIN" --branch "$branch" --base "$base_ref" --path "$dir" >/dev/null 2>&1 \
+    if have_herdr; then
+        # --no-focus: creating a session must never yank the view away from
+        # whatever the human is typing in. The CLI already defaults to this;
+        # saying it out loud means a change of default upstream cannot silently
+        # start stealing focus.
+        herdr worktree create --cwd "$MAIN" --branch "$branch" --base "$base_ref" --path "$dir" --no-focus >/dev/null 2>&1 \
             || git -C "$MAIN" worktree add -b "$branch" "$dir" "$base_ref" >/dev/null
     elif git -C "$MAIN" rev-parse --verify --quiet "$branch" >/dev/null; then
         git -C "$MAIN" worktree add "$dir" "$branch" >/dev/null
@@ -526,7 +544,7 @@ cmd_list() {
 # everything else still works. Cleaning up somebody else's registry is a nicety;
 # failing the whole `clean` because a JSON parser is missing would not be.
 herdr_forget() {
-    command -v herdr >/dev/null 2>&1 || return 0
+    have_herdr || return 0
     command -v jq    >/dev/null 2>&1 || return 0
 
     local path="$1" id
@@ -659,7 +677,7 @@ cmd_verify() {
     fi
 
     info "4. Herdr"
-    if command -v herdr >/dev/null 2>&1; then
+    if have_herdr; then
         ok "   available ($(herdr --version 2>/dev/null | head -1))"
 
         # Drift between herdr's registry and the filesystem. Reported, not fixed:
