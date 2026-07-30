@@ -514,6 +514,31 @@ cmd_list() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# HERDR KEEPS ITS OWN REGISTRY, AND IT DOES NOT WATCH GIT
+# ---------------------------------------------------------------------------
+# `git worktree remove` deletes the checkout and the git bookkeeping. Herdr never
+# hears about it, so its workspace list keeps an entry pointing at a directory
+# that is gone. Measured on a real machine after a day of sessions: 14 entries
+# against 4 real directories.
+#
+# Optional, not a dependency: without `jq` (or without herdr) this is a no-op and
+# everything else still works. Cleaning up somebody else's registry is a nicety;
+# failing the whole `clean` because a JSON parser is missing would not be.
+herdr_forget() {
+    command -v herdr >/dev/null 2>&1 || return 0
+    command -v jq    >/dev/null 2>&1 || return 0
+
+    local path="$1" id
+    id="$(herdr workspace list 2>/dev/null \
+          | jq -r --arg p "$path" \
+              '.result.workspaces[]? | select(.worktree.checkout_path == $p) | .workspace_id' \
+              2>/dev/null | head -1)"
+    [[ -n "$id" ]] || return 0
+
+    herdr workspace close "$id" >/dev/null 2>&1 && info "    herdr: closed workspace $id"
+}
+
 cmd_clean() {
     info "Looking for worktrees with no changes and no commits of their own…"
     local removed=0
@@ -552,6 +577,7 @@ cmd_clean() {
         fi
 
         git -C "$MAIN" worktree remove "$path" --force >/dev/null 2>&1 || true
+        herdr_forget "$path"
         # `-d`, not `-D`: a branch with unmerged commits survives. Only branches
         # without their own commits reach this point, but I would rather git had
         # the last word than my condition above.
@@ -635,6 +661,24 @@ cmd_verify() {
     info "4. Herdr"
     if command -v herdr >/dev/null 2>&1; then
         ok "   available ($(herdr --version 2>/dev/null | head -1))"
+
+        # Drift between herdr's registry and the filesystem. Reported, not fixed:
+        # `clean` fixes what it removes, but entries left by a plain
+        # `git worktree remove` are not this command's to delete silently.
+        if command -v jq >/dev/null 2>&1; then
+            local stale=0 p
+            while IFS= read -r p; do
+                [[ -n "$p" ]] || continue
+                [[ -d "$p" ]] || stale=$((stale + 1))
+            done < <(herdr workspace list 2>/dev/null \
+                     | jq -r '.result.workspaces[]?.worktree.checkout_path // empty' 2>/dev/null)
+            if [[ "$stale" -gt 0 ]]; then
+                warn "   $stale workspace(s) point at directories that no longer exist"
+                warn "   (herdr does not watch git — 'awt clean' clears the ones it removes)"
+            else
+                ok "   registry matches the filesystem"
+            fi
+        fi
         local agents
         agents="$(herdr agent list 2>/dev/null | grep -o '"cwd":"[^"]*"' | sed 's/"cwd":"//;s/"//' | sort -u || true)"
         if [[ -n "$agents" ]]; then
