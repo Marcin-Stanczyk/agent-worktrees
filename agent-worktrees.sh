@@ -59,11 +59,16 @@ MAIN="$(dirname "$MAIN")"        # .../repo/.git -> .../repo
 PARENT="$(dirname "$MAIN")"
 PREFIX="$(basename "$MAIN")-session"
 
-color() { printf '\033[%sm%s\033[0m\n' "$1" "$2"; }
+# CHANNEL DISCIPLINE, and it is load-bearing.
+# Everything a HUMAN reads goes to stderr. stdout carries one thing only: the
+# session path, and the tab-separated protocol line the shell function parses.
+# When these mixed, the wrapper did `cd` on a coloured banner glued to the path
+# and failed with "no such file or directory: <escape codes>New working session…".
+color() { printf '\033[%sm%s\033[0m\n' "$1" "$2" >&2; }
 info()  { color '0;36' "$1"; }
 ok()    { color '0;32' "$1"; }
 warn()  { color '0;33' "$1"; }
-err()   { color '0;31' "$1" >&2; }
+err()   { color '0;31' "$1"; }
 
 # ---------------------------------------------------------------------------
 # CONFIGURATION — a file in the repository, detection as the fallback
@@ -105,7 +110,7 @@ detect_bases() {
             if git -C "$MAIN" rev-parse --verify --quiet "origin/$b" >/dev/null; then
                 printf '%s\n' "$b"
             else
-                warn "  .agent-worktrees.conf lists '$b', but origin/$b does not exist — skipping" >&2
+                warn "  .agent-worktrees.conf lists '$b', but origin/$b does not exist — skipping"
             fi
         done
         return 0
@@ -127,7 +132,7 @@ release_branch() {
         if git -C "$MAIN" rev-parse --verify --quiet "origin/$configured" >/dev/null; then
             printf '%s\n' "$configured"; return 0
         fi
-        warn "  .agent-worktrees.conf sets release = $configured, but origin/$configured does not exist" >&2
+        warn "  .agent-worktrees.conf sets release = $configured, but origin/$configured does not exist"
     fi
     local b
     for b in production prod main master; do
@@ -303,7 +308,7 @@ cmd_start() {
         exit 0
     fi
 
-    local dir; dir="$(cmd_new "$name" "$base" | tail -1)"
+    local dir; dir="$(cmd_new "$name" "$base")"
 
     # A process cannot change its parent shell's directory — that is a property of
     # processes, not a shortcoming here. When a shell function calls us
