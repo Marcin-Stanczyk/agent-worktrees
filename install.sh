@@ -1,29 +1,56 @@
 #!/usr/bin/env bash
 #
-# Instalacja: dowiązanie w PATH + blok do ~/.zshrc.
-# Dowiązanie, nie kopia — dzięki temu `git pull` w tym repozytorium od razu
-# aktualizuje narzędzie, bez powtarzania instalacji.
+# Installs a symlink into ~/.local/bin and prints the shell function to add.
+#
+# A symlink rather than a copy: `git pull` in this repository then updates the
+# tool everywhere at once, with no reinstall step to remember.
 
 set -euo pipefail
-ZRODLO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sesja.sh"
-CEL="$HOME/.local/bin/sesja-cli"
+
+SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/agent-worktrees.sh"
+TARGET="$HOME/.local/bin/agent-worktrees"
 
 mkdir -p "$HOME/.local/bin"
-ln -sf "$ZRODLO" "$CEL"
-echo "✓ $CEL -> $ZRODLO"
+ln -sf "$SOURCE" "$TARGET"
+chmod +x "$SOURCE"
+echo "✓ $TARGET -> $SOURCE"
 
 case ":$PATH:" in
     *":$HOME/.local/bin:"*) ;;
-    *) echo "⚠ ~/.local/bin nie jest w PATH — dopisz do ~/.zshrc:"
-       echo '    export PATH="$HOME/.local/bin:$PATH"' ;;
+    *)
+        echo
+        echo "⚠  ~/.local/bin is not in your PATH. Add this to your shell config:"
+        echo '     export PATH="$HOME/.local/bin:$PATH"'
+        ;;
 esac
 
-if grep -q 'sesja-cli' "$HOME/.zshrc" 2>/dev/null; then
-    echo "✓ funkcja `sesja` jest już w ~/.zshrc"
-else
-    echo
-    echo "Dopisz do ~/.zshrc (funkcja, nie alias — tylko funkcja zmieni katalog powłoki):"
-    echo
-    sed -n '/^sesja() {/,/^}/p' "$(dirname "$ZRODLO")/README.md" 2>/dev/null \
-      || echo "  (blok znajdziesz w README.md, sekcja „Jedno hasło: sesja”)"
+RC="${ZDOTDIR:-$HOME}/.zshrc"
+[[ -f "$RC" ]] || RC="$HOME/.bashrc"
+
+if grep -q 'agent-worktrees' "$RC" 2>/dev/null; then
+    echo "✓ shell function already present in $(basename "$RC")"
+    exit 0
 fi
+
+cat <<'BLOCK'
+
+Add this to your shell config. It must be a FUNCTION, not an alias — only a
+function can change the current shell's directory, and an alias cannot capture
+the script's output.
+
+awt() {
+    local cli="$HOME/.local/bin/agent-worktrees"
+    case "${1:-start}" in
+        start|"")
+            local out dir agent
+            out="$(AWT_WRAPPER=1 "$cli" start)" || return 1
+            dir="${out%%$'\t'*}"; agent="${out##*$'\t'}"
+            cd "$dir" || return 1
+            [[ "$agent" == "plain shell" ]] && return 0
+            "$agent"
+            ;;
+        *) "$cli" "$@" ;;
+    esac
+}
+
+BLOCK
