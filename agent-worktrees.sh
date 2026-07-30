@@ -360,7 +360,7 @@ cmd_new() {
 
     if [[ -d "$dir" ]]; then
         warn "Worktree already exists — entering the existing one."
-        echo "$dir"; return 0
+        echo "$dir"; return 0   # stdout: path only
     fi
 
     # ALWAYS off a fresh remote state. Branching off a local branch would drag in
@@ -390,18 +390,25 @@ cmd_new() {
     remember_base "$branch" "$base_ref"
     link_memory "$dir"
 
-    ok "Session ${name} ready."
-    info "  directory: $dir"
-    info "  branch:    $branch (off $base_ref)"
+    # Everything below is for the human, so the whole block is redirected once.
+    # Redirecting each call individually is how a bare `echo` slipped onto stdout
+    # and prefixed the protocol line with a blank line — the wrapper then tried to
+    # `cd` into "\n/path/to/session".
+    {
+        ok "Session ${name} ready."
+        info "  directory: $dir"
+        info "  branch:    $branch (off $base_ref)"
 
-    if [[ "$branch" == hotfix/* ]]; then
-        echo
-        warn "HOTFIX — cut from $base_ref, not from the development branch."
-        warn "  After releasing, MERGE THIS FIX BACK into your development branch:"
-        warn "    git checkout <development-branch> && git merge $branch"
-        warn "  Without that, the next release silently reverts it."
-    fi
+        if [[ "$branch" == hotfix/* ]]; then
+            echo
+            warn "HOTFIX — cut from $base_ref, not from the development branch."
+            warn "  After releasing, MERGE THIS FIX BACK into your development branch:"
+            warn "    git checkout <development-branch> && git merge $branch"
+            warn "  Without that, the next release silently reverts it."
+        fi
+    } >&2
 
+    # THE ONLY thing this function writes to stdout.
     echo "$dir"
 }
 
