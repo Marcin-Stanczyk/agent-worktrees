@@ -107,10 +107,16 @@ condition is this narrow.
 Optional. Drop `.agent-worktrees.conf` in the repository root:
 
 ```ini
-bases   = develop, main     # which branches to offer as a base
-release = main              # the branch a hotfix targets
-agent   = claude            # which agent to preselect
+bases      = develop, main         # which branches to offer as a base
+release    = main                  # the branch a hotfix targets
+agent      = claude                # which agent to preselect
+agent_args = --add-dir ../api      # extra flags passed to the agent
 ```
+
+`agent_args` earns its place on **multi-repository projects**: a worktree only
+ever contains one repository, so an agent that needs its siblings in scope has to
+be told. Paths are relative to the session directory, which keeps them valid for
+anyone whose checkouts sit side by side.
 
 Without it, the tool looks for the conventional names — `develop`, `dev`,
 `staging`, `stage`, `main`, `master`, `production`, `prod` — and offers the ones
@@ -135,12 +141,13 @@ awt() {
             # A process cannot change its parent shell's directory. So the script
             # hands us the path and the agent, and we do the `cd` here — which is
             # also why you stay in the session after the agent exits.
-            local out dir agent
+            local out dir rest agent args
             out="$(AWT_WRAPPER=1 "$cli" start)" || return 1
-            dir="${out%%$'\t'*}"; agent="${out##*$'\t'}"
+            dir="${out%%$'\t'*}"; rest="${out#*$'\t'}"
+            agent="${rest%%$'\t'*}"; args="${rest#*$'\t'}"
             cd "$dir" || return 1
             [[ "$agent" == "plain shell" ]] && return 0
-            "$agent"
+            "$agent" ${=args}   # ${=} forces word splitting in zsh
             ;;
         *) "$cli" "$@" ;;
     esac

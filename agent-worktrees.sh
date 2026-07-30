@@ -73,9 +73,10 @@ err()   { color '0;31' "$1" >&2; }
 # directory gets to execute arbitrary code, which is a risk not worth taking for
 # a file this simple.
 #
-#   bases   = develop, main
-#   release = main
-#   agent   = claude
+#   bases      = develop, main
+#   release    = main
+#   agent      = claude
+#   agent_args = --add-dir ../sibling-repo
 config() {
     local file="$MAIN/.agent-worktrees.conf" key="$1"
     [[ -f "$file" ]] || return 1
@@ -283,11 +284,22 @@ cmd_start() {
     # (AWT_WRAPPER=1) we hand it the path and the agent and let it do the `cd`.
     # Run directly, we change directory ourselves and replace the process.
     if [[ -n "${AWT_WRAPPER:-}" ]]; then
-        printf '%s\t%s\n' "$dir" "$agent"; return 0
+        # Three tab-separated fields: directory, agent, extra arguments. The
+        # third may be empty; the shell function must still split on tabs, not
+        # on whitespace, or a multi-flag argument list would fall apart.
+        printf '%s\t%s\t%s\n' "$dir" "$agent" "$(config agent_args 2>/dev/null || true)"
+        return 0
     fi
     cd "$dir" || exit 1
     [[ "$agent" == "plain shell" ]] && exec "${SHELL:-/bin/bash}"
-    exec "$agent"
+
+    # Extra arguments for the agent, e.g. sibling repositories a multi-repo
+    # project needs in scope. Word-split on purpose — this is a list of flags,
+    # not one string. Paths are relative to the session directory, so they stay
+    # valid for anyone whose checkouts sit side by side.
+    local extra; extra="$(config agent_args 2>/dev/null || true)"
+    # shellcheck disable=SC2086
+    exec "$agent" $extra
 }
 
 cmd_new() {
@@ -633,9 +645,10 @@ agent-worktrees — one agent, one working directory
 
 Configuration (.agent-worktrees.conf in the repository root, all optional):
 
-  bases   = develop, main     which branches to offer as a base
-  release = main              the branch a hotfix targets
-  agent   = claude            which agent to preselect
+  bases      = develop, main       which branches to offer as a base
+  release    = main                the branch a hotfix targets
+  agent      = claude              which agent to preselect
+  agent_args = --add-dir ../other  extra flags passed to the agent
 
 HELP
         ;;
