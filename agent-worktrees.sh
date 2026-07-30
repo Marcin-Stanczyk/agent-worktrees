@@ -92,7 +92,22 @@ detect_bases() {
     local configured b out=()
     if configured="$(config bases 2>/dev/null)"; then
         IFS=',' read -ra out <<< "$configured"
-        for b in "${out[@]}"; do printf '%s\n' "$(echo "$b" | xargs)"; done
+        for b in "${out[@]}"; do
+            b="$(echo "$b" | xargs)"
+            [[ -n "$b" ]] || continue
+            # CONFIGURED NAMES ARE CHECKED TOO, and that is the whole point.
+            # An earlier version trusted the config and only verified the
+            # auto-detected names. A typo — or a project that renamed its
+            # branches — then failed with "No such base" AFTER the user had
+            # already picked a base, typed a name and chosen an agent. The
+            # config is written by hand, so it is exactly where a wrong name
+            # comes from.
+            if git -C "$MAIN" rev-parse --verify --quiet "origin/$b" >/dev/null; then
+                printf '%s\n' "$b"
+            else
+                warn "  .agent-worktrees.conf lists '$b', but origin/$b does not exist — skipping" >&2
+            fi
+        done
         return 0
     fi
     for b in develop dev staging stage main master production prod; do
@@ -105,7 +120,15 @@ detect_bases() {
 # reverted by the next release — the hardest kind of regression to spot, since
 # nobody broke anything.
 release_branch() {
-    config release 2>/dev/null && return 0
+    local configured
+    if configured="$(config release 2>/dev/null)"; then
+        # Same reason as above: a release branch that does not exist would send
+        # a hotfix off nothing at all.
+        if git -C "$MAIN" rev-parse --verify --quiet "origin/$configured" >/dev/null; then
+            printf '%s\n' "$configured"; return 0
+        fi
+        warn "  .agent-worktrees.conf sets release = $configured, but origin/$configured does not exist" >&2
+    fi
     local b
     for b in production prod main master; do
         git -C "$MAIN" rev-parse --verify --quiet "origin/$b" >/dev/null && { printf '%s\n' "$b"; return 0; }
@@ -228,7 +251,10 @@ cmd_start() {
     while IFS= read -r b; do bases+=("$b"); done < <(detect_bases)
     if [ "${#bases[@]}" -eq 0 ]; then
         err "No usable base branch found on origin."
-        printf '%s\n' "Set one in .agent-worktrees.conf, e.g.:  bases = main" >&2
+        printf '%s\n' "Branches that DO exist on origin:" >&2
+        git -C "$MAIN" branch -r --format='%(refname:lstrip=3)' 2>/dev/null \
+            | grep -v '^HEAD' | sed 's/^/  /' >&2
+        printf '%s\n' "Set one of them in .agent-worktrees.conf, e.g.:  bases = dev, prod" >&2
         exit 1
     fi
 
