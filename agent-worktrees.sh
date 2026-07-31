@@ -347,6 +347,53 @@ have_herdr() {
     command -v herdr >/dev/null 2>&1
 }
 
+# ---------------------------------------------------------------------------
+# ONE SESSION, ONE WORKSPACE, ONE TAB
+# ---------------------------------------------------------------------------
+# Two things create a session and they used to ignore each other. Herdr opens a
+# workspace with a fresh shell in it; the wrapper then runs the agent in the tab
+# the human is already sitting in. Nobody ever typed into herdr's shell, so every
+# session left an idle pane behind — and because the agent stayed in the tab it
+# started in, the sidebar filed all of them under whatever workspace that tab
+# belonged to. Three agents in three different repositories, all labelled with
+# the name of the first one.
+#
+# So the tab moves to the session instead. The pane the human is in is pulled
+# into the new workspace, and herdr's untouched shell is closed behind it. Order
+# matters: move first, close second. Closing first would take the workspace's
+# only pane with it, and the workspace would go too.
+#
+# Needs jq (the move takes an id that arrives as JSON) and HERDR_PANE_ID, which
+# herdr exports into every pane it owns. Missing either one, the session still
+# works exactly as before — just with the stray pane.
+adopt_current_pane() {
+    local created="$1" dir="$2" ws spawned
+    command -v jq >/dev/null 2>&1 || return 0
+    [[ -n "${HERDR_PANE_ID:-}" ]] || return 0
+
+    ws="$(printf '%s' "$created" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)"
+    spawned="$(printf '%s' "$created" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)"
+    [[ -n "$ws" && -n "$spawned" ]] || return 0
+    [[ "$HERDR_PANE_ID" != "$spawned" ]] || return 0
+
+    # `--workspace` is only accepted alongside `--new-tab`; on its own the
+    # command exits 2 and prints usage. Discovered by reading the exit code
+    # after a pipe into jq had swallowed it and made the failure look like a
+    # success.
+    herdr pane move "$HERDR_PANE_ID" --new-tab --workspace "$ws" --no-focus \
+        >/dev/null 2>&1 || return 0
+
+    herdr pane close "$spawned" >/dev/null 2>&1 || true
+
+    # The label is derived from the surviving pane's directory, and at this
+    # moment that is still wherever the human typed the command — the main
+    # checkout, most of the time. Left alone it reads "kamar" for a kanarix
+    # session, which is the whole misfiling this function exists to end. So the
+    # name is set from the session, not inferred from a directory that has not
+    # caught up yet.
+    herdr workspace rename "$ws" "$(basename "$2")" >/dev/null 2>&1 || true
+}
+
 cmd_new() {
     local name="${1:-}"
     local wanted="${2:-}"
@@ -397,8 +444,15 @@ cmd_new() {
         # whatever the human is typing in. The CLI already defaults to this;
         # saying it out loud means a change of default upstream cannot silently
         # start stealing focus.
-        herdr worktree create --cwd "$MAIN" --branch "$branch" --base "$base_ref" --path "$dir" --no-focus >/dev/null 2>&1 \
-            || git -C "$MAIN" worktree add -b "$branch" "$dir" "$base_ref" >/dev/null
+        local created
+        created="$(herdr worktree create --cwd "$MAIN" --branch "$branch" \
+                     --base "$base_ref" --path "$dir" --no-focus --json 2>/dev/null)" \
+            || created=""
+        if [[ -n "$created" ]]; then
+            adopt_current_pane "$created" "$dir"
+        else
+            git -C "$MAIN" worktree add -b "$branch" "$dir" "$base_ref" >/dev/null
+        fi
     elif git -C "$MAIN" rev-parse --verify --quiet "$branch" >/dev/null; then
         git -C "$MAIN" worktree add "$dir" "$branch" >/dev/null
     else
@@ -570,6 +624,14 @@ cmd_clean() {
         # included. Learned the hard way. "Clean up my sessions" has no business
         # touching anything else.
         [[ "$(basename "$path")" == "$PREFIX-"* ]] || continue
+
+        # NOT THE ONE YOU ARE STANDING IN. Removing it leaves the shell in a
+        # directory that no longer exists, and now that a session owns a herdr
+        # workspace it also closes the tab the command was typed into.
+        [[ "$path" == "$PWD" || "$PWD" == "$path"/* ]] && {
+            warn "  skipping (you are in it): $path"
+            continue
+        }
 
         # Untouched means no working changes AND no commits beyond the base.
         if [[ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]]; then
