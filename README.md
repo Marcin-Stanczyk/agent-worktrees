@@ -192,6 +192,45 @@ If Herdr is on your `PATH`, worktree creation is handed to it, so the session
 opens in its own window and shows up in its agent list. Without it everything
 still works — the session just will not open a window by itself.
 
+**Set `AGENT_WORKTREES_NO_HERDR=1` before testing this tool.** `new` and `clean`
+both rearrange Herdr's panes. If someone is working in that Herdr right now — and
+while you are testing, that someone is usually you in the other window — their
+layout shifts under their hands mid-sentence. The variable makes both commands
+fall back to plain worktree operations and touch nothing visual.
+
+```bash
+AGENT_WORKTREES_NO_HERDR=1 agent-worktrees new spike/whatever
+```
+
+## Traps
+
+**Run it from the repository you are working on, not from this one.** Every
+command resolves branches and worktrees relative to the current directory. Run
+`new` from this tool's own checkout and you get `No such base: origin/prod`,
+because this repository has no such branch. Run `clean` there and it reports
+`removed 0`, because there is nothing to remove. Both messages are accurate and
+both read like the tool is broken. It is not — you are standing in the wrong
+directory.
+
+**Moving the parent directory breaks every worktree link.** A linked worktree
+stores an absolute path in its `.git` file, and the main repository stores the
+matching absolute path in `.git/worktrees/*/gitdir`. Rename or move the directory
+holding them and git stops resolving in either direction. The repair is one
+command from the main checkout:
+
+```bash
+git worktree repair --relative-paths     # needs a git new enough to have the flag
+```
+
+`--relative-paths` rewrites the links relative, so the *next* move needs no
+repair at all. Run it once after any reorganisation and the problem stops
+recurring.
+
+Two things it does **not** fix, because they are not git's to fix: your agent
+tool's session history, if that is keyed by directory path, and any terminal
+workspace manager storing absolute working directories. Check both before moving
+anything you would miss.
+
 ## Requirements
 
 `git` 2.38 or newer (for `merge-tree --write-tree`) and `bash`. Tested on macOS
