@@ -23,6 +23,57 @@ not work because Y" is the most valuable thing here and the first thing lost.
 
 ---
 
+## 2026-08-08 — closing pass — the fix that had not reached the machine it was written on
+
+**Done.** Protocol versioning, an end-of-input guard, and a watchdog in the
+suite. 34 → 37 scenarios. Merged to `main`, CI green. The author's own `.zshrc`
+migrated from a pasted `awt()` to the sourced file, and the whole loop verified
+through real zsh: survey → session → agent running in the session directory →
+shell left there.
+
+**Proven.** Reverting the version check ran the survey instead of refusing;
+reverting `read_line`'s EOF handling reported *"spun on end of input"* — caught
+by the watchdog rather than hanging the run.
+
+**Found — and this is the one worth keeping.**
+
+`awt` had been broken on this machine all day. The morning's change moved the
+reply from three tab-separated fields to one field per line; the shell still held
+a copy of the old function pasted in before there was a file to source. It split
+on tabs, found none, handed `cd` all three lines and returned 1. Silence.
+
+Three things made it survive:
+
+1. **Everything except `awt` kept working.** No other subcommand goes through the
+   function, so `awt list`, `awt where` and `agent-worktrees new` were all fine.
+   A failure with a small blast radius is harder to place, not easier.
+2. **The README warning was written by the person who then hit it.** Knowing the
+   hazard does not migrate anybody's shell, including your own. A warning is not
+   a mechanism.
+3. **Nothing checked.** Two components shipped separately, agreed a format, and
+   had no way to notice they disagreed.
+
+So: **a protocol between separately-shipped components needs a version, or the
+mismatch is silent.** The wrapper now announces which one it speaks and the tool
+refuses a mismatch with a sentence — checked before the survey, because asking
+for a base, a name and an agent and only then admitting the answer cannot be
+delivered is the rudest possible ordering.
+
+Two more, smaller but general:
+
+- **Removing a guard should make a test fail, not hang.** It happened twice here,
+  and the second time it left a deliberately broken file on disk while I chased
+  the hang. `timeout(1)` is absent on macOS; `with_timeout` is the portable
+  background-poll-kill version. A suite that hangs is a suite people stop running.
+- **EOF is an answer.** `read` fails at end of input, the old `read_line` turned
+  that into an empty string, and `ask_name` rejected it and asked again for ever.
+  Any pipeline or CI job running the survey hit it. The confirmation prompt still
+  treats EOF as consent, so `yes "" | awt` matches a human pressing Enter.
+
+**Next.** Unchanged: Phase 2 step 3, blocked on 30 days of `shown_count`.
+
+---
+
 ## 2026-08-08 — Phase 4 — the questions the happy path never asks
 
 **Done.** `tests/hardening.test.ts` (8 scenarios) and a Retrieval section in
