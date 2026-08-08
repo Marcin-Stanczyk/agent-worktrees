@@ -1,0 +1,43 @@
+# The suite exists because manual testing missed a command that had never once
+# worked. Running it on both platforms matters for the same reason: the bug that
+# mattered most was a bash-3.2-and-pipefail interaction, and macOS is where that
+# bash lives.
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: git version (needs 2.38+ for merge-tree --write-tree)
+        run: git --version
+
+      - name: shellcheck
+        run: |
+          if ! command -v shellcheck >/dev/null; then
+            if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get install -y shellcheck
+            else brew install shellcheck; fi
+          fi
+          shellcheck -s bash -e SC2001,SC2016 agent-worktrees.sh install.sh test/run.sh
+          # -e SC3043: `local` is the one non-POSIX construct used, on purpose —
+          # bash, zsh, dash and ksh all have it, and the alternative is leaking
+          # variables into the user's interactive shell.
+          shellcheck -s sh -e SC3043 awt.sh
+          bash -n awt.sh
+          zsh  -n awt.sh
+
+      - name: test suite
+        run: ./test/run.sh
+
+      - name: test suite under the system bash (3.2 on macOS)
+        run: BASH_UNDER_TEST=/bin/bash ./test/run.sh

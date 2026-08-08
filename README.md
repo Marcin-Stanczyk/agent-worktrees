@@ -128,34 +128,53 @@ that is not a risk worth taking for something this simple.
 
 ## Shell integration
 
-`install.sh` symlinks the script into `~/.local/bin` and prints this block for
-your shell config. It has to be a **function, not an alias**: only a function can
-change the current shell's directory, and an alias cannot capture the script's
-output.
+`install.sh` symlinks two things: the tool into `~/.local/bin`, and the shell
+function into `~/.local/share/agent-worktrees/awt.sh`. Then it prints one line to
+add to your shell config:
 
-```zsh
-awt() {
-    local cli="$HOME/.local/bin/agent-worktrees"
-    case "${1:-start}" in
-        start|"")
-            # A process cannot change its parent shell's directory. So the script
-            # hands us the path and the agent, and we do the `cd` here — which is
-            # also why you stay in the session after the agent exits.
-            local out dir rest agent args
-            out="$(AWT_WRAPPER=1 "$cli" start)" || return 1
-            dir="${out%%$'\t'*}"; rest="${out#*$'\t'}"
-            agent="${rest%%$'\t'*}"; args="${rest#*$'\t'}"
-            cd "$dir" || return 1
-            [[ "$agent" == "plain shell" ]] && return 0
-            "$agent" ${=args}   # ${=} forces word splitting in zsh
-            ;;
-        *) "$cli" "$@" ;;
-    esac
-}
+```sh
+[ -f "$HOME/.local/share/agent-worktrees/awt.sh" ] && . "$HOME/.local/share/agent-worktrees/awt.sh"
 ```
 
-Name it whatever you like — the function lives in your shell config, not in this
-repository.
+It has to be a **function, not an alias**: only a function can change the current
+shell's directory, and an alias cannot capture the tool's output.
+
+**Source it, do not paste it.** The function and the tool speak a protocol to
+each other, and a pasted copy cannot follow a change to that protocol. There used
+to be two pasted copies — one in this README, one in `install.sh` — and they
+drifted: the installer stayed on an older two-field format and read the agent's
+*arguments* as the agent's *name*, so it tried to run `--add-dir` as a command.
+Because the README told you to start with `./install.sh`, the broken copy is the
+one every new person got, while everyone who already had the good one in their
+shell config saw nothing wrong. The file at
+[`awt.sh`](awt.sh) is now the only copy, and `git pull` updates it with the tool.
+
+If you already pasted an `awt()` function into your shell config, delete it —
+`install.sh` will warn you if it spots one.
+
+The function is written in POSIX shell so the same file works in **bash
+(including the 3.2 that macOS ships) and zsh**. The earlier README version used
+zsh's `${=args}`, which is a `bad substitution` in bash — and `install.sh` picks
+`.bashrc` whenever there is no `.zshrc`, so it was actively pointing part of a
+team at the shell where its own snippet did not run.
+
+## Testing
+
+```bash
+./test/run.sh                      # every scenario
+./test/run.sh wrapper              # only scenarios matching "wrapper"
+BASH_UNDER_TEST=/bin/bash ./test/run.sh    # against macOS's bash 3.2
+```
+
+Plain bash, no `bats` and no assertion library — the tool refuses to depend on
+anything you have to install first, and a suite that broke that promise would not
+get run by the people most likely to find bugs.
+
+Every scenario builds its own bare repository plus a clone, so `origin/<branch>`
+is real rather than simulated, and runs with `AGENT_WORKTREES_NO_HERDR=1` and a
+throwaway `HOME`. Without the first it would rearrange the panes of whoever is
+using herdr right now; without the second it would write symlinks into your real
+`~/.claude/projects`.
 
 ## What it looks like
 
@@ -188,9 +207,19 @@ Enter, and you are in the new directory with the agent running.
 
 ## Herdr
 
-If Herdr is on your `PATH`, worktree creation is handed to it, so the session
-opens in its own window and shows up in its agent list. Without it everything
-still works — the session just will not open a window by itself.
+**Optional, and deliberately kept that way.** If Herdr is on your `PATH`,
+worktree creation is handed to it, so the session opens in its own window and
+shows up in its agent list. Without it everything still works — the session just
+will not open a window by itself. `install.sh` says so once, and
+`agent-worktrees verify` reports it every time; neither offers to install it.
+
+That is a decision, not an omission. Making Herdr compulsory — even behind a
+friendly "install it?" prompt — would cost this tool the one property that lets
+it be dropped into any repository on any machine, and a prompt is unsafe here
+besides: stdout carries the protocol the shell function parses, so anything
+asking a question has to be careful about which channel it speaks on. If your
+*team* wants to standardise on Herdr, that belongs in the project's
+`.agent-worktrees.conf`, not in the tool.
 
 **Set `AGENT_WORKTREES_NO_HERDR=1` before testing this tool.** `new` and `clean`
 both rearrange Herdr's panes. If someone is working in that Herdr right now — and
@@ -234,7 +263,15 @@ anything you would miss.
 ## Requirements
 
 `git` 2.38 or newer (for `merge-tree --write-tree`) and `bash`. Tested on macOS
-against the system bash 3.2, so it avoids constructs that need bash 4+.
+against the system bash 3.2, so it avoids constructs that need bash 4+. The shell
+function is POSIX and works in bash and zsh alike.
+
+A remote called **`origin`** — every base a session is cut from is a remote
+branch, so a repository without one is refused with an explanation rather than
+the silent `exit 1` it used to give.
+
+Nothing else is required. `herdr` and `jq` are both optional and both degrade to
+a no-op; see below.
 
 ## Rules a worktree cannot enforce for you
 

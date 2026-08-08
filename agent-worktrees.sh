@@ -141,8 +141,40 @@ release_branch() {
     return 1
 }
 
+# `detect_bases | head -1` is what this used to be, and it never once worked.
+# `head` closes the pipe after the first line, the producer is killed by SIGPIPE,
+# `set -o pipefail` reports 141 for the whole pipeline and `set -e` ends the
+# script — with no message, no exit code anybody sees, and no worktree. Only the
+# non-interactive path was affected, because the survey reads the same function
+# through a process substitution where the status is discarded, so the bug sat
+# there in plain sight while the tool "worked".
+#
+# So nothing is consumed half-way: collect first, then cut.
 default_base() {
-    detect_bases | head -1
+    local all
+    all="$(detect_bases)" || true
+    printf '%s\n' "$all" | head -1
+}
+
+# EVERY base is a remote ref, so a repository without `origin` can answer none of
+# the questions this tool asks. Without this check it failed anyway, but silently:
+# `new` died on the fetch with an empty stderr, and the survey blamed the branches
+# ("no usable base found on origin") in a repository that has no origin at all.
+require_origin() {
+    git -C "$MAIN" remote get-url origin >/dev/null 2>&1 && return 0
+    err "This repository has no remote called 'origin'."
+    {
+        printf '%s\n' "Sessions are always cut from a remote branch, so there has to be one."
+        local remotes; remotes="$(git -C "$MAIN" remote 2>/dev/null || true)"
+        if [[ -n "$remotes" ]]; then
+            printf '%s\n' "Remotes this repository does have:"
+            printf '%s\n' "$remotes" | sed 's/^/  /'
+            printf '%s\n' "Rename one of them:  git remote rename <name> origin"
+        else
+            printf '%s\n' "It has no remotes at all:  git remote add origin <url>"
+        fi
+    } >&2
+    exit 1
 }
 
 # ---------------------------------------------------------------------------
@@ -250,6 +282,8 @@ available_agents() {
 cmd_start() {
     local base name agent preferred release
 
+    require_origin
+
     info "New working session — repository: $(basename "$MAIN")"
 
     local bases=() b labels=()
@@ -315,10 +349,22 @@ cmd_start() {
     # (AWT_WRAPPER=1) we hand it the path and the agent and let it do the `cd`.
     # Run directly, we change directory ourselves and replace the process.
     if [[ -n "${AWT_WRAPPER:-}" ]]; then
-        # Three tab-separated fields: directory, agent, extra arguments. The
-        # third may be empty; the shell function must still split on tabs, not
-        # on whitespace, or a multi-flag argument list would fall apart.
-        printf '%s\t%s\t%s\n' "$dir" "$agent" "$(config agent_args 2>/dev/null || true)"
+        # ONE FIELD PER LINE: directory, agent, then one extra argument per line.
+        #
+        # It used to be three tab-separated fields with the arguments packed into
+        # the last one, which left the splitting to the shell function — and the
+        # two shells this has to run in disagree about that. Bash splits an
+        # unquoted expansion, zsh does not; the documented `${=args}` that fixes
+        # zsh is a syntax error in bash. Either way an argument containing a
+        # space was torn in half.
+        #
+        # Splitting here instead settles it: the script already knows where the
+        # argument boundaries are, so it says so, and both shells only have to
+        # read lines. Word-split on purpose below — `agent_args` is a list of
+        # flags, not one string.
+        local extra; extra="$(config agent_args 2>/dev/null || true)"
+        # shellcheck disable=SC2086
+        printf '%s\n' "$dir" "$agent" $extra
         return 0
     fi
     cd "$dir" || exit 1
@@ -408,6 +454,8 @@ cmd_new() {
     # from development would carry that entire payload to production alongside the
     # one line you meant to change. So the base is explicit, and the branch is
     # named differently — so `git branch` shows at a glance what targets release.
+    require_origin
+
     local release; release="$(release_branch 2>/dev/null || true)"
     [[ -z "$wanted" ]] && wanted="$(default_base)"
     wanted="${wanted#origin/}"
