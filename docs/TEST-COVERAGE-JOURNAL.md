@@ -23,6 +23,58 @@ not work because Y" is the most valuable thing here and the first thing lost.
 
 ---
 
+## 2026-08-08 — Phases 1 and 2 — brain-mcp: hooks tested, and retrieval moved to where the task is known
+
+**Done.**
+- `tests/hooks/test_hooks.py` — 41 scenarios, standard library only, for hooks
+  that had none while `src/` had 39. Ranking, the per-session no-repeat rule, the
+  new instrumentation, `project_name` folding worktrees into their parent, the
+  `Stop` hook's four anti-loop guards, and for *every* hook: malformed JSON,
+  empty payload, missing database, corrupt database, read-only database,
+  unwritable state directory.
+- `hooks/relevant_lessons.py` — a `UserPromptSubmit` hook that searches the FTS5
+  index for lessons matching the prompt, **across every project**. The current
+  project wins ties rather than winning outright.
+- `shown_count`, `last_shown_at`, `scope` on `lessons`; `hooks/_brain_db.py` as
+  the single definition of the path, the connection, the migration and the FTS
+  sanitiser; `STATE_DIR` reduced from two definitions to one.
+- CI runs the hook suite; `install-hooks.mjs` registers the new hook.
+
+**Proven.** Three deliberate regressions turned the suite red:
+- cross-project search reverted to a project filter → *"finds a lesson filed
+  under a different project"* FAILED.
+- `updated_at` touched when recording a show → *"showing a lesson does not make
+  it look freshly written"* FAILED.
+- instrumentation removed → *"records that a lesson was shown"* FAILED.
+
+**Found.**
+- **The second proof passed on the first attempt, and the test was wrong, not the
+  code.** The fixture inserted rows with `datetime('now')`, so `updated_at` and
+  the hook's write landed in the same second and the assertion held either way.
+  Pinned to a fixed past instant. Generalises: any test asserting *"this
+  timestamp did not change"* is worthless unless the fixture's timestamp is
+  distinguishable from the one under test.
+- The `lessons_au` trigger re-indexes FTS on every `UPDATE`, so instrumentation
+  writes cost an FTS delete+insert per shown lesson. Three per prompt — measured
+  as negligible, recorded so it is not rediscovered as a mystery.
+- `grep` in this environment returns empty results for patterns that plainly
+  match; searching with Python was the workaround. Worth knowing before
+  concluding a symbol does not exist.
+
+**Demonstrated.** A session in `kamar` asking *"my bash script dies with exit 141
+and pipefail, no message"* now receives lesson #296, which is filed under
+`agent-worktrees`. Under the old mechanism that lesson was invisible outside its
+own repository, permanently — the exact repeat-mistake shape that prompted this
+work.
+
+**Next.** Let `shown_count` accumulate for a week, then read it before touching
+ranking again. Phase 4 (`brain-mcp`'s MCP surface beyond the happy path) is
+untouched, and so is the idea of a `PreToolUse` guard that surfaces a lesson
+*before* a risky command rather than after — deliberately not built yet, because
+a noisy guard in a daily driver is how the whole system gets uninstalled.
+
+---
+
 ## 2026-08-08 — Phase 3 — herdr, rehearse, where and the installer; CI turned red first
 
 **Done.**

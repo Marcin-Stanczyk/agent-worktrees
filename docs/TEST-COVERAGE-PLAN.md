@@ -61,7 +61,7 @@ All three fixed bugs were confirmed to turn the suite red before the fix.
 
 ---
 
-### Phase 1 — `brain-mcp`: the hooks
+### Phase 1 — `brain-mcp`: the hooks ✅ done 2026-08-08
 
 **The largest gap in either project.** `hooks/session_context.py` (383 lines),
 `hooks/capture_lesson.py` and `hooks/incident_watch.py` have no tests at all, and
@@ -81,7 +81,7 @@ code). That is trivially testable and currently untested.
 - Cross-cutting: **no hook may ever crash a session.** One scenario per hook
   feeding it malformed JSON, an empty payload, and a read-only filesystem.
 
-### Phase 2 — `brain-mcp`: retrieval, as a measurable property
+### Phase 2 — `brain-mcp`: retrieval, as a measurable property ⏳ steps 1–2 done 2026-08-08
 
 This phase is different from the others: it cannot be written until a design
 question is answered, and the question is the one that prompted this work —
@@ -126,7 +126,7 @@ So Phase 2 is, in order:
 Steps 2 and 3 are a decision, not a chore, and should not be started before
 step 1 has produced a week of numbers.
 
-### Phase 3 — `agent-worktrees`: the paths deliberately not covered yet
+### Phase 3 — `agent-worktrees`: the paths deliberately not covered yet ✅ done 2026-08-08
 
 - **The herdr integration.** Every herdr call is currently skipped by
   `AGENT_WORKTREES_NO_HERDR=1`, because exercising it rearranges the panes of
