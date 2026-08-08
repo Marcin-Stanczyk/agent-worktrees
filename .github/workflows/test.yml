@@ -22,11 +22,17 @@ jobs:
       - name: git version (needs 2.38+ for merge-tree --write-tree)
         run: git --version
 
-      - name: shellcheck
+      # zsh is not preinstalled on the Linux runner, and skipping the zsh
+      # checks there would defeat the point: the shell function exists in one
+      # copy precisely so that bash and zsh cannot drift apart, and the bug it
+      # replaced was a zsh-only construct that bash refused to parse.
+      - name: shellcheck and zsh
         run: |
-          if ! command -v shellcheck >/dev/null; then
-            if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get install -y shellcheck
-            else brew install shellcheck; fi
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq shellcheck zsh
+          else
+            command -v shellcheck >/dev/null || brew install shellcheck
           fi
           shellcheck -s bash -e SC2001,SC2016 agent-worktrees.sh install.sh test/run.sh
           # -e SC3043: `local` is the one non-POSIX construct used, on purpose —

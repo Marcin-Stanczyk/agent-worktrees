@@ -497,6 +497,18 @@ cmd_new() {
                      --base "$base_ref" --path "$dir" --no-focus --json 2>/dev/null)" \
             || created=""
         if [[ -n "$created" ]]; then
+            # TRUST THE HAND-OVER, BUT CONFIRM IT LANDED.
+            # Creating the directory is herdr's job here, so there is nothing to
+            # fall back to — but announcing a session that is not on disk is
+            # worse than failing: the shell function would `cd` into a path that
+            # does not exist, and the error names the path rather than the cause.
+            if [[ ! -d "$dir" ]]; then
+                err "herdr reported success but created nothing at:"
+                err "  $dir"
+                printf '%s\n' "Nothing was created. Check 'herdr worktree create' by hand, or" >&2
+                printf '%s\n' "re-run with AGENT_WORKTREES_NO_HERDR=1 to use plain git worktrees." >&2
+                exit 1
+            fi
             adopt_current_pane "$created" "$dir"
         else
             git -C "$MAIN" worktree add -b "$branch" "$dir" "$base_ref" >/dev/null

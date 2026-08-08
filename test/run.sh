@@ -89,7 +89,7 @@ make_repo() { # name branch...
 # The tool, always with herdr disabled and a throwaway HOME.
 awt_run() { # dir args...
     local d="$1"; shift
-    ( cd "$d" && AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" \
+    ( cd "$d" && AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" HERDR_PANE_ID="" \
         "$BASH_UNDER_TEST" "$AWT_SH" "$@" )
 }
 
@@ -204,7 +204,7 @@ t_outside_repo() {
     scenario "outside a repository: refuses with an explanation" || return 0
     local d="$TMP/not-a-repo"; mkdir -p "$d"
     local rc err
-    ( cd "$d" && AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" \
+    ( cd "$d" && AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" HERDR_PANE_ID="" \
         "$BASH_UNDER_TEST" "$AWT_SH" list ) >/dev/null 2>"$TMP/e"; rc=$?
     err="$(cat "$TMP/e")"
     assert_eq 1 "$rc" "exit code" || return 0
@@ -235,7 +235,7 @@ t_protocol() {
     printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/claude"; chmod +x "$TMP/bin/claude"
     local out
     out="$( cd "$repo" && printf '1\nproto\n1\n\n' | \
-        AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" AWT_WRAPPER=1 \
+        AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" HERDR_PANE_ID="" AWT_WRAPPER=1 \
         PATH="$TMP/bin:$PATH" "$BASH_UNDER_TEST" "$AWT_SH" start 2>/dev/null )"
     assert_eq 5 "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" \
         "5 lines: dir, agent, 3 arguments" || return 0
@@ -387,6 +387,335 @@ t_no_herdr_flag() {
     done_ok
 }
 
+# --------------------------------------------------------------------------
+# HERDR, WITHOUT A LIVE HERDR
+# --------------------------------------------------------------------------
+# Every herdr path was previously untested for a good reason: exercising it
+# against a real server rearranges the panes of whoever is working right now.
+# A fake on PATH removes the reason. It records its argv in call order and
+# answers the two commands whose OUTPUT the tool actually parses, so
+# `adopt_current_pane` and `herdr_forget` can be checked properly — including
+# the ordering that matters (move the pane before closing the spawned one;
+# closing first would take the workspace's only pane and the workspace with it).
+fake_herdr() { # dir  [create-fails]
+    local d="$1" fails="${2:-}"
+    mkdir -p "$d/bin"
+    cat > "$d/bin/herdr" <<HERDR
+#!/bin/sh
+printf '%s\n' "\$*" >> "$d/herdr.calls"
+case "\$1 \$2" in
+    "worktree create")
+        [ -n "$fails" ] && exit 1
+        # Real herdr CREATES the worktree; the tool only adds a fresh base and
+        # shared memory on top. A fake that answered without creating anything
+        # would be testing a herdr that does not exist.
+        if [ -z "\$HERDR_FAKE_HOLLOW" ]; then
+            _cwd=; _branch=; _base=; _path=
+            while [ \$# -gt 0 ]; do
+                case "\$1" in
+                    --cwd) _cwd="\$2"; shift ;;
+                    --branch) _branch="\$2"; shift ;;
+                    --base) _base="\$2"; shift ;;
+                    --path) _path="\$2"; shift ;;
+                esac
+                shift
+            done
+            git -C "\$_cwd" worktree add -b "\$_branch" "\$_path" "\$_base" >/dev/null 2>&1
+        fi
+        printf '%s' '{"result":{"workspace":{"workspace_id":"ws-1"},"root_pane":{"pane_id":"pane-spawned"}}}'
+        ;;
+    "workspace list")
+        printf '%s' '{"result":{"workspaces":[{"workspace_id":"ws-1","worktree":{"checkout_path":"'"\$HERDR_FAKE_PATH"'"}}]}}'
+        ;;
+    "--version"*) printf 'herdr 0.0.0-fake\n' ;;
+esac
+exit 0
+HERDR
+    chmod +x "$d/bin/herdr"
+    : > "$d/herdr.calls"
+}
+
+# Same as awt_run but WITH herdr enabled and the fake first on PATH.
+#
+# HERDR_PANE_ID is cleared everywhere in this suite. Whoever runs it is quite
+# likely sitting in a herdr pane, which exports that variable — and inheriting it
+# made the "no pane is touched" scenario pass or fail depending on which terminal
+# the suite was started from. A test that consults the developer's environment is
+# not a test.
+awt_run_herdr() { # dir fakedir args...
+    local d="$1" f="$2"; shift 2
+    ( cd "$d" && HOME="$FAKE_HOME" PATH="$f/bin:$PATH" \
+        HERDR_PANE_ID="" HERDR_FAKE_PATH="${HERDR_FAKE_PATH:-}" \
+        "$BASH_UNDER_TEST" "$AWT_SH" "$@" )
+}
+
+t_herdr_creates() {
+    scenario "herdr: worktree creation is handed over, with --no-focus" || return 0
+    command -v jq >/dev/null 2>&1 || { dim "    (no jq here — skipped)"; SKIP=$((SKIP + 1)); return 0; }
+    local repo; repo="$(make_repo h1 main develop)"
+    local f="$TMP/fake-h1"; fake_herdr "$f"
+    local out; out="$(awt_run_herdr "$repo" "$f" new iota develop 2>/dev/null)"
+    local calls; calls="$(cat "$f/herdr.calls")"
+    assert_contains "$calls" "worktree create" "herdr was asked to create it" || return 0
+    assert_contains "$calls" "--no-focus" "creation never steals focus" || return 0
+    assert_contains "$calls" "--base origin/develop" "the fresh remote base is passed on" || return 0
+    assert_contains "$calls" "--branch session/iota" "the branch name is passed on" || return 0
+    assert_dir "$out" "the worktree still exists (the tool made it, herdr is a fake)" || return 0
+    done_ok
+}
+
+t_herdr_create_fails() {
+    # The fallback that keeps a broken or absent herdr from costing you a session.
+    scenario "herdr: a failed hand-over falls back to plain git" || return 0
+    local repo; repo="$(make_repo h2 main develop)"
+    local f="$TMP/fake-h2"; fake_herdr "$f" fails
+    local out rc
+    out="$(awt_run_herdr "$repo" "$f" new kappa develop 2>/dev/null)"; rc=$?
+    assert_eq 0 "$rc" "exit code" || return 0
+    assert_dir "$out" "the worktree was created anyway" || return 0
+    assert_eq "session/kappa" "$(git -C "$out" rev-parse --abbrev-ref HEAD)" "branch" || return 0
+    done_ok
+}
+
+t_herdr_adopts_pane() {
+    # ONE SESSION, ONE WORKSPACE, ONE TAB. Order is the assertion: move first,
+    # close second. And the rename must use the SESSION's name, not the
+    # directory the human happened to be standing in.
+    scenario "herdr: the current pane is moved into the workspace, then the spare is closed" || return 0
+    command -v jq >/dev/null 2>&1 || { dim "    (no jq here — skipped)"; SKIP=$((SKIP + 1)); return 0; }
+    local repo; repo="$(make_repo h3 main develop)"
+    local f="$TMP/fake-h3"; fake_herdr "$f"
+    ( cd "$repo" && HOME="$FAKE_HOME" PATH="$f/bin:$PATH" HERDR_PANE_ID="pane-human" \
+        "$BASH_UNDER_TEST" "$AWT_SH" new lambda develop ) >/dev/null 2>&1
+    local calls; calls="$(cat "$f/herdr.calls")"
+    assert_contains "$calls" "pane move pane-human --new-tab --workspace ws-1 --no-focus" \
+        "the human's pane is moved, in a new tab, without focus" || return 0
+    assert_contains "$calls" "pane close pane-spawned" "the untouched spawned pane is closed" || return 0
+    local move_line close_line
+    move_line="$(grep -n "pane move" "$f/herdr.calls" | head -1 | cut -d: -f1)"
+    close_line="$(grep -n "pane close" "$f/herdr.calls" | head -1 | cut -d: -f1)"
+    [ "$move_line" -lt "$close_line" ] || { fail "closed before moving — that takes the workspace with it"; return 0; }
+    assert_contains "$calls" "workspace rename ws-1 " "the workspace is renamed" || return 0
+    assert_contains "$(grep 'workspace rename' "$f/herdr.calls")" "-session-lambda" \
+        "renamed after the SESSION, not after the directory the human was in" || return 0
+    done_ok
+}
+
+t_herdr_no_pane_id() {
+    scenario "herdr: without HERDR_PANE_ID the session still works, minus the tidy-up" || return 0
+    local repo; repo="$(make_repo h4 main develop)"
+    local f="$TMP/fake-h4"; fake_herdr "$f"
+    local out; out="$(awt_run_herdr "$repo" "$f" new mu develop 2>/dev/null)"
+    assert_dir "$out" "session created" || return 0
+    assert_not_contains "$(cat "$f/herdr.calls")" "pane move" "no pane is touched" || return 0
+    done_ok
+}
+
+t_herdr_hollow_success() {
+    # Found by the fake: if herdr reports success but creates nothing, the tool
+    # used to announce a ready session and hand the wrapper a path to `cd` into
+    # that was not there. Trusting the hand-over is right; trusting it blindly is
+    # not, and the check costs one stat.
+    scenario "herdr: a hand-over that reports success but creates nothing is caught" || return 0
+    local repo; repo="$(make_repo h7 main develop)"
+    local f="$TMP/fake-h7"; fake_herdr "$f"
+    local out rc err
+    out="$( cd "$repo" && HOME="$FAKE_HOME" PATH="$f/bin:$PATH" HERDR_PANE_ID="" HERDR_FAKE_HOLLOW=1 \
+        "$BASH_UNDER_TEST" "$AWT_SH" new omicron develop 2>"$TMP/e" )"; rc=$?
+    err="$(cat "$TMP/e")"
+    assert_eq 1 "$rc" "exit code" || return 0
+    assert_eq "" "$out" "no path is printed for a session that does not exist" || return 0
+    assert_contains "$err" "reported success but created nothing" "explains what happened" || return 0
+    done_ok
+}
+
+t_herdr_forget() {
+    scenario "herdr: clean closes the workspace of every worktree it removes" || return 0
+    command -v jq >/dev/null 2>&1 || { dim "    (no jq here — skipped)"; SKIP=$((SKIP + 1)); return 0; }
+    local repo; repo="$(make_repo h5 main develop)"
+    local f="$TMP/fake-h5"; fake_herdr "$f"
+    local session; session="$(awt_run "$repo" new nu develop 2>/dev/null)"
+    : > "$f/herdr.calls"
+    ( cd "$repo" && HOME="$FAKE_HOME" PATH="$f/bin:$PATH" HERDR_PANE_ID="" HERDR_FAKE_PATH="$session" \
+        "$BASH_UNDER_TEST" "$AWT_SH" clean ) >/dev/null 2>&1
+    assert_no_dir "$session" "the worktree is gone" || return 0
+    assert_contains "$(cat "$f/herdr.calls")" "workspace close ws-1" \
+        "and its registry entry with it" || return 0
+    done_ok
+}
+
+t_herdr_forget_no_match() {
+    scenario "herdr: a worktree herdr never knew about is removed without complaint" || return 0
+    local repo; repo="$(make_repo h6 main develop)"
+    local f="$TMP/fake-h6"; fake_herdr "$f"
+    local session; session="$(awt_run "$repo" new xi develop 2>/dev/null)"
+    : > "$f/herdr.calls"
+    local rc
+    ( cd "$repo" && HOME="$FAKE_HOME" PATH="$f/bin:$PATH" HERDR_PANE_ID="" HERDR_FAKE_PATH="/nowhere/at/all" \
+        "$BASH_UNDER_TEST" "$AWT_SH" clean ) >/dev/null 2>&1; rc=$?
+    assert_eq 0 "$rc" "clean still succeeds" || return 0
+    assert_no_dir "$session" "the worktree is gone" || return 0
+    assert_not_contains "$(cat "$f/herdr.calls")" "workspace close" "nothing was closed" || return 0
+    done_ok
+}
+
+# --------------------------------------------------------------------------
+# REHEARSING, WHERE, AND CLEAN AGAINST A MOVING BASE
+# --------------------------------------------------------------------------
+# `advance_base` puts a real commit on origin/<base> so "behind" is genuine
+# rather than simulated — the counts come from `git rev-list`, which a fixture
+# faking the ref would answer wrongly.
+advance_base() { # repo base file content
+    local repo="$1" base="$2" file="$3" content="$4"
+    local tmp="$TMP/advance.$$"
+    git clone -q --branch "$base" "$(git -C "$repo" remote get-url origin)" "$tmp"
+    (
+        cd "$tmp" && git config user.email t@example.com && git config user.name Test \
+            && git config commit.gpgsign false \
+            && printf '%s\n' "$content" > "$file" && git add "$file" \
+            && git commit -qm "base moves" && git push -q origin "$base"
+    )
+    rm -rf "$tmp"
+}
+
+t_rehearse_clean() {
+    scenario "rehearse: behind but mergeable says so and changes nothing" || return 0
+    local repo; repo="$(make_repo r13 main develop)"
+    local session; session="$(awt_run "$repo" new rho develop 2>/dev/null)"
+    advance_base "$repo" develop "theirs.txt" "from the base"
+    echo "mine" > "$session/mine.txt"
+    local out rc
+    out="$(awt_run "$session" rehearse 2>&1)"; rc=$?
+    assert_eq 0 "$rc" "exit code" || return 0
+    assert_contains "$out" "commits to pull, NO conflict" "reports a clean merge" || return 0
+    [ -f "$session/theirs.txt" ] && { fail "the rehearsal actually merged — it must not touch the tree"; return 0; }
+    assert_eq "mine" "$(cat "$session/mine.txt")" "uncommitted work untouched" || return 0
+    done_ok
+}
+
+t_rehearse_conflict() {
+    # The case the whole command exists for, and the one never exercised before:
+    # the rehearsal must SEE the conflict while leaving the directory alone.
+    scenario "rehearse: a real conflict is reported and the tree is left alone" || return 0
+    local repo; repo="$(make_repo r14 main develop)"
+    local session; session="$(awt_run "$repo" new sigma develop 2>/dev/null)"
+    advance_base "$repo" develop "README.md" "the base rewrote this line"
+    (
+        cd "$session" && git config user.email t@example.com && git config user.name Test \
+            && git config commit.gpgsign false \
+            && printf '%s\n' "the session rewrote this line" > README.md \
+            && git add README.md && git commit -qm "mine"
+    )
+    local out rc
+    out="$(awt_run "$session" rehearse 2>&1)"; rc=$?
+    assert_eq 1 "$rc" "a conflict is a non-zero exit" || return 0
+    assert_contains "$out" "CONFLICT" "says so" || return 0
+    assert_contains "$out" "README.md" "names the file needing a decision" || return 0
+    assert_eq "the session rewrote this line" "$(cat "$session/README.md")" \
+        "the working tree was NOT touched" || return 0
+    assert_eq "" "$(git -C "$session" status --porcelain)" "no half-merged state left behind" || return 0
+    done_ok
+}
+
+t_where_counts() {
+    scenario "where: counts commits of your own and how far behind the base is" || return 0
+    local repo; repo="$(make_repo r15 main develop)"
+    local session; session="$(awt_run "$repo" new tau develop 2>/dev/null)"
+    (
+        cd "$session" && git config user.email t@example.com && git config user.name Test \
+            && git config commit.gpgsign false \
+            && echo one > a.txt && git add a.txt && git commit -qm one \
+            && echo two > b.txt && git add b.txt && git commit -qm two
+    )
+    advance_base "$repo" develop "theirs.txt" "moved"
+    ( cd "$session" && git fetch -q origin )
+    local out
+    out="$(awt_run "$session" where 2>&1)"
+    assert_contains "$out" "commits of your own: 2" "counts your commits against the BASE" || return 0
+    assert_contains "$out" "1 commits behind" "counts how far behind" || return 0
+    assert_contains "$out" "session/tau" "names the branch" || return 0
+    done_ok
+}
+
+t_clean_keeps_committed_after_base_moves() {
+    # `base_of` exists precisely so this cannot go wrong: counting against a
+    # fixed branch instead of the recorded base would let a session holding real
+    # work look empty once the base moved on.
+    scenario "clean: a session with commits survives the base moving underneath it" || return 0
+    local repo; repo="$(make_repo r16 main develop)"
+    local session; session="$(awt_run "$repo" new upsilon develop 2>/dev/null)"
+    (
+        cd "$session" && git config user.email t@example.com && git config user.name Test \
+            && git config commit.gpgsign false \
+            && echo work > work.txt && git add work.txt && git commit -qm "real work"
+    )
+    advance_base "$repo" develop "theirs.txt" "moved"
+    ( cd "$repo" && git fetch -q origin )
+    awt_run "$repo" clean >/dev/null 2>&1
+    assert_dir "$session" "the session with real work is still there" || return 0
+    done_ok
+}
+
+# --------------------------------------------------------------------------
+# THE INSTALLER
+# --------------------------------------------------------------------------
+# Never against the real HOME: this writes symlinks and reads shell rc files.
+install_into() { # home  -> stdout of install.sh
+    local h="$1"
+    mkdir -p "$h"
+    ( HOME="$h" ZDOTDIR="$h" "$BASH_UNDER_TEST" "$ROOT/install.sh" 2>&1 )
+}
+
+t_install_symlinks() {
+    scenario "install: symlinks both the tool and the shell function" || return 0
+    local h="$TMP/home-install"; mkdir -p "$h"; : > "$h/.zshrc"
+    local out; out="$(install_into "$h")"
+    [ -L "$h/.local/bin/agent-worktrees" ] || { fail "no symlink for the tool"; return 0; }
+    [ -L "$h/.local/share/agent-worktrees/awt.sh" ] || { fail "no symlink for the function"; return 0; }
+    assert_eq "$AWT_SH" "$(readlink "$h/.local/bin/agent-worktrees")" "tool points at the checkout" || return 0
+    assert_eq "$FUNC_SH" "$(readlink "$h/.local/share/agent-worktrees/awt.sh")" \
+        "function points at the checkout — a copy could drift" || return 0
+    assert_contains "$out" "agent-worktrees/awt.sh" "prints the line to add" || return 0
+    done_ok
+}
+
+t_install_idempotent() {
+    scenario "install: run twice, and the second run notices the line is there" || return 0
+    local h="$TMP/home-twice"; mkdir -p "$h"
+    printf '%s
+' '[ -f "$HOME/.local/share/agent-worktrees/awt.sh" ] && . "$HOME/.local/share/agent-worktrees/awt.sh"' > "$h/.zshrc"
+    local out; out="$(install_into "$h")"
+    assert_contains "$out" "already sourced" "says so instead of printing the block again" || return 0
+    done_ok
+}
+
+t_install_warns_about_pasted_copy() {
+    # The exact situation every existing user is in: a hand-pasted awt() from
+    # before there was a file to source. It cannot follow a protocol change, so
+    # leaving it in place is how somebody keeps running the broken wrapper.
+    scenario "install: warns about an older pasted-in awt() function" || return 0
+    local h="$TMP/home-stale"; mkdir -p "$h"
+    printf 'awt() {
+  local cli="$HOME/.local/bin/agent-worktrees"
+}
+' > "$h/.zshrc"
+    local out; out="$(install_into "$h")"
+    assert_contains "$out" "DELETE IT" "tells you to remove it" || return 0
+    assert_contains "$out" "cannot follow changes to the protocol" "and why" || return 0
+    done_ok
+}
+
+t_install_reports_herdr_without_demanding_it() {
+    scenario "install: mentions a missing herdr once, and asks for nothing" || return 0
+    local h="$TMP/home-herdr"; mkdir -p "$h"; : > "$h/.zshrc"
+    local out
+    out="$( PATH="/usr/bin:/bin" HOME="$h" ZDOTDIR="$h" "$BASH_UNDER_TEST" "$ROOT/install.sh" 2>&1 )"
+    assert_contains "$out" "nothing here needs it" "reports it as optional" || return 0
+    assert_not_contains "$out" "[y/N]" "no prompt" || return 0
+    assert_not_contains "$out" "Install herdr?" "no prompt" || return 0
+    done_ok
+}
+
 # ==========================================================================
 # RUNNER
 # ==========================================================================
@@ -425,6 +754,21 @@ t_read_only_commands
 t_same_branch_lock
 t_memory_symlink
 t_no_herdr_flag
+t_herdr_creates
+t_herdr_create_fails
+t_herdr_adopts_pane
+t_herdr_no_pane_id
+t_herdr_hollow_success
+t_herdr_forget
+t_herdr_forget_no_match
+t_rehearse_clean
+t_rehearse_conflict
+t_where_counts
+t_clean_keeps_committed_after_base_moves
+t_install_symlinks
+t_install_idempotent
+t_install_warns_about_pasted_copy
+t_install_reports_herdr_without_demanding_it
 
 printf '\n'
 if [ "$FAIL" -eq 0 ]; then

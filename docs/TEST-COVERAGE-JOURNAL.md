@@ -23,6 +23,45 @@ not work because Y" is the most valuable thing here and the first thing lost.
 
 ---
 
+## 2026-08-08 — Phase 3 — herdr, rehearse, where and the installer; CI turned red first
+
+**Done.**
+- 15 more scenarios in `test/run.sh` (19 → 34). Herdr behind a fake on `PATH`
+  that genuinely creates the worktree and records its argv: hand-over flags,
+  fallback when the hand-over fails, `adopt_current_pane` (move BEFORE close,
+  asserted by line order; rename after the session, not the directory), the
+  `HERDR_PANE_ID`-absent path, `herdr_forget` on `clean`, and the no-match case.
+  Plus `rehearse` against a real conflict, `where` arithmetic, `clean` with the
+  base moved underneath a session, and `install.sh` into a throwaway `HOME`
+  (symlinks, idempotence, the stale-pasted-function warning, the herdr notice).
+- CI now installs `zsh` on the Linux runner.
+
+**Proven.** The new guard was reverted and *"herdr: a hand-over that reports
+success but creates nothing"* failed with `want [1], got [0]`.
+
+**Found.**
+- **CI caught its own first bug immediately**: the Linux runner has no `zsh`, so
+  the very check that exists to stop bash/zsh drift was silently absent there.
+  macOS passed. Without the second platform this would have looked green.
+- **A hand-over that succeeds without creating anything was not caught.** The
+  fake herdr initially did not create the worktree, which failed the test — and
+  the failure was correct: the tool trusted the JSON, announced a ready session
+  and printed a path that was not on disk, so the shell function would `cd` into
+  nothing and blame the path rather than the cause. Now guarded, with the
+  fallback advice (`AGENT_WORKTREES_NO_HERDR=1`) in the message.
+- **The suite was reading the developer's environment.** `HERDR_PANE_ID` is
+  exported into every herdr pane, so the "no pane is touched" scenario passed or
+  failed depending on which terminal the suite was started from. Cleared
+  explicitly in every runner now. Worth remembering as a class: a fake on `PATH`
+  isolates the *binary*, not the *environment it reads*.
+- Heredoc discipline: an unquoted heredoc expanded `$#`/`$1` while *writing* the
+  fake, producing a script that silently did nothing and made four unrelated
+  scenarios fail with empty call logs.
+
+**Next.** Phase 1: `brain-mcp`'s hooks.
+
+---
+
 ## 2026-08-08 — Phase 0 — first tests, and three bugs that predate them
 
 **Done.**
