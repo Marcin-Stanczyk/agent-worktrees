@@ -23,6 +23,53 @@ not work because Y" is the most valuable thing here and the first thing lost.
 
 ---
 
+## 2026-08-08 — Phase 2 (cont.) — a false positive caught by using the thing
+
+**Done.**
+- `incident_watch` no longer reports the *creation* of a backup as an undo. The
+  check is positional now — is the `.bak` a source of the copy or its
+  destination — instead of a regex proxy. Four tests, both directions, unit and
+  end to end.
+- `brain_learn` accepts `scope: "global"`, so a lesson about a tool rather than a
+  project can say so. The column existed since this morning and nothing wrote it.
+- `initDB` migration of a pre-existing database is tested: existing rows land on
+  `shown_count = 0` and `scope = 'project'`, not NULL.
+- Both PRs merged to `prod`, CI green on Node 20 and 22. Live database migrated
+  with all 297 lessons intact.
+
+**Proven.** The old regex was restored and
+`test_end_to_end_a_backup_does_not_prompt` failed.
+
+**Found.** Installing the new hooks tripped the old one:
+
+```
+cp ~/.claude/settings.json /tmp/settings.json.bak-$(date +%s) && ls ...
+```
+
+was reported as *"restored from a backup"*. Nothing was restored — a backup was
+being taken before touching a live config, which is the most careful thing
+anybody does, and the worst possible thing for a precision-first hook to scold.
+
+It is the **second** time that same mistake shipped. The source comment records
+the first: a regex matching a `.bak` anywhere, fixed by excluding one at the END
+of the command. A timestamp suffix followed by `&&` walked straight through the
+fix. Worth stating as a class, because it generalises well beyond this file:
+
+> When the real question is **positional** — is this thing an input or an
+> output? — a textual proxy like "is it last?" will keep almost working. Each
+> counterexample looks like a one-off worth patching, and the patch buys another
+> few weeks. Ask the real question instead.
+
+**Verified end to end on the live system.** A session in `kamar` asking about a
+silent `exit 141` now receives lesson #296 (filed under `agent-worktrees`),
+#258 and #261 — from three different projects. The old digest would have shown
+none of them: #296 is not in `kamar`'s twelve. `shown_count` is accumulating and
+`updated_at` is untouched.
+
+**Next.** Read `shown_count` in a week before touching ranking. Phase 4 remains.
+
+---
+
 ## 2026-08-08 — Phases 1 and 2 — brain-mcp: hooks tested, and retrieval moved to where the task is known
 
 **Done.**
