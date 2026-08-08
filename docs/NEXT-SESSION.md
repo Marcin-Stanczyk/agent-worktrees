@@ -15,7 +15,10 @@ Steps 1 and 2 shipped that day — instrumentation (`shown_count`,
 `last_shown_at`, `scope`) and a `UserPromptSubmit` hook that searches the FTS5
 index across every project. **Step 3, changing the ranking itself, was blocked
 until 30 days of real data existed**, so a change could be shown to help rather
-than merely to differ. A one-time reminder is scheduled for **2026-09-08**.
+than merely to differ. A one-time reminder is scheduled for **2026-09-08, 09:00
+Atlantic/Canary** — [routine `trig_01FJKvYToTUNNCt6i1S9WGdN`](https://claude.ai/code/routines/trig_01FJKvYToTUNNCt6i1S9WGdN).
+It cannot read the database (it runs in the cloud, `data/` is gitignored); it
+comments on issue #2 with these commands and criteria, and nothing more.
 
 ### Read the data first
 
