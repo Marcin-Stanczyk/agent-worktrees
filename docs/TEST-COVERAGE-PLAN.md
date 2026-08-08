@@ -126,6 +126,12 @@ So Phase 2 is, in order:
 Steps 2 and 3 are a decision, not a chore, and should not be started before
 step 1 has produced a week of numbers.
 
+**Status 2026-08-08:** step 1 (instrumentation) and step 2 (the
+`UserPromptSubmit` hook, cross-project relevance, `scope`) are done and in
+production. Step 3 — a fixture corpus of (task → lesson that should surface)
+pairs, and any change to ranking — is **blocked on data by choice**: come back
+once `brain_status` reports a counting window of 30 days.
+
 ### Phase 3 — `agent-worktrees`: the paths deliberately not covered yet ✅ done 2026-08-08
 
 - **The herdr integration.** Every herdr call is currently skipped by
@@ -142,7 +148,7 @@ step 1 has produced a week of numbers.
   already-installed path, the stale-pasted-function warning, the missing-`PATH`
   warning.
 
-### Phase 4 — `brain-mcp`: the MCP surface, beyond the happy path
+### Phase 4 — `brain-mcp`: the MCP surface, beyond the happy path ✅ done 2026-08-08
 
 `src/` has 39 tests and they pass; this is hardening, not repair.
 

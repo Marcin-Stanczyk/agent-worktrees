@@ -23,6 +23,49 @@ not work because Y" is the most valuable thing here and the first thing lost.
 
 ---
 
+## 2026-08-08 — Phase 4 — the questions the happy path never asks
+
+**Done.** `tests/hardening.test.ts` (8 scenarios) and a Retrieval section in
+`brain_status`. Merged to `prod`; CI green on Node 20 and 22. Totals now: 49
+server tests, 45 hook tests, 34 in `agent-worktrees`.
+
+- **Concurrency** — two connections writing interleaved, 40 rows, none lost, and
+  all 40 present in the FTS index. A lesson that exists and cannot be found is
+  worse than one that does not exist. A read-only connection must see committed
+  writes, not a stale snapshot.
+- **Archive semantics both ways** — `brain_forget` must remove the FTS row, not
+  just the lesson; `brain_restore` must put it back; and restore *without*
+  `confirm: true` must change nothing.
+- **Export fidelity against what the base actually holds** — Polish prose with a
+  fenced bash block, CRLF, a trailing backslash, the export format's own
+  delimiters. Run **twice**, because a round-trip that normalises something on
+  the first pass looks lossless from the second onwards. Plus a truncated export
+  file, which must import nothing rather than half a lesson.
+- **Slow embeddings**, not merely dead — a call that waits is indistinguishable
+  from one that hung.
+
+**Proven.** Removing the `lessons_ad` trigger failed the archive scenario;
+removing the counting-window guard failed the status scenario.
+
+**Found.**
+- `brain_restore` looked broken and was not: it is a two-step with `confirm`,
+  and the test called it without. The fix was to assert **both** steps — the
+  no-op without confirm is now covered, which it was not before. A safety gate
+  that quietly stopped gating would otherwise look exactly like a passing test.
+- `brain_status` initially reported *"120 lessons older than 30 days and never
+  surfaced"* on the day the counters were added — true of the whole base by
+  construction, and reading like a finding about the lessons when it was a fact
+  about the clock. The window is measured from the first recorded retrieval now,
+  and the number is withheld until it means something. **Generalises: a metric
+  introduced today cannot describe yesterday, and presenting it as though it can
+  is worse than not measuring.**
+
+**Next.** Only Phase 2 step 3 remains, and it is deliberately blocked: read
+`shown_count` after a week of real use before touching ranking. Everything else
+in the plan is done.
+
+---
+
 ## 2026-08-08 — Phase 2 (cont.) — a false positive caught by using the thing
 
 **Done.**
