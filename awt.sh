@@ -34,7 +34,11 @@ awt() {
             # leaking four variables into somebody's interactive shell on every
             # session.
             local awt_out awt_line awt_dir awt_agent
-            awt_out="$(AWT_WRAPPER=1 "$AWT_CLI" start)" || return 1
+            # The 2 is the protocol version, not a boolean. The tool refuses to
+            # answer a wrapper that speaks an older one rather than emitting a
+            # reply it knows will be mishandled — which is what happened, in
+            # silence, when the format last changed.
+            awt_out="$(AWT_WRAPPER=2 "$AWT_CLI" start)" || return 1
 
             # ONE FIELD PER LINE: directory, agent, then one argument per line.
             # Read into the positional parameters a line at a time, so no shell
