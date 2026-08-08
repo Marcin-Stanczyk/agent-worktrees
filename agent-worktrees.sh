@@ -38,6 +38,24 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
+# THE PROTOCOL HAS A VERSION, AND THAT IS NOT CEREMONY
+# ---------------------------------------------------------------------------
+# The shell function and this script talk to each other. When the format changed
+# — three tab-separated fields became one field per line — every shell still
+# holding the older function silently stopped working: it split on tabs, found
+# none, and handed `cd` the whole three-line reply. `awt` did nothing and
+# returned 1, with no clue as to why.
+#
+# That happened on the author's own machine, hours after the change, having
+# written the README section warning about exactly it.
+#
+# The installer now sources one file instead of printing a copy to paste, so
+# this cannot recur for anyone who reinstalls. It says nothing to anyone who
+# does not. So the version travels with the request: the wrapper announces which
+# protocol it speaks, and a mismatch becomes a sentence instead of a silence.
+AWT_PROTOCOL=2
+
+# ---------------------------------------------------------------------------
 # THIS TOOL BELONGS TO NO PARTICULAR PROJECT
 # ---------------------------------------------------------------------------
 # The repository is resolved from THE DIRECTORY YOU ARE STANDING IN, not from
@@ -232,10 +250,28 @@ base_of() {
 # never requires installing anything. Questions go to stderr because stdout
 # carries the result (the path) that the shell function reads.
 
+# EOF IS AN ANSWER, AND IT USED TO BE AN INFINITE LOOP.
+# `read` fails at end of input, the old version turned that into an empty string,
+# and `ask_name` rejected the empty string and asked again — for ever, printing
+# its complaint as fast as the terminal would take it. Reached by anything that
+# runs the survey without a human on the other end: `awt < /dev/null`, a
+# pipeline, a CI job, or a test that removes the guard which used to exit first.
+# Found by a test hanging rather than failing, which is its own kind of warning.
 read_line() {
     local l
-    read -r l || l=""
+    if ! read -r l; then
+        printf '%s' "$l"
+        return 1
+    fi
     printf '%s' "$l"
+}
+
+# Callers all want the same thing on EOF: stop, say why, change nothing.
+no_more_input() {
+    err "No input — the survey cannot be answered."
+    printf '%s\n' "Nothing was created. For a non-interactive session use:" >&2
+    printf '%s\n' "  agent-worktrees new <name> [base]" >&2
+    exit 1
 }
 
 choose() {
@@ -247,7 +283,8 @@ choose() {
     } >&2
     while true; do
         printf '   choice [1]: ' >&2
-        pick="$(read_line)"; pick="${pick:-1}"
+        pick="$(read_line)" || no_more_input
+        pick="${pick:-1}"
         if [[ "$pick" =~ ^[0-9]+$ ]] && [ "$pick" -ge 1 ] && [ "$pick" -le "${#options[@]}" ]; then
             printf '%s\n' "${options[$((pick - 1))]}"; return 0
         fi
@@ -260,7 +297,7 @@ ask_name() {
     while true; do
         printf '\n\033[0;36mSession name\033[0m (directory, branch and window all get it)\n' >&2
         printf '   name: ' >&2
-        name="$(read_line)"
+        name="$(read_line)" || no_more_input
         # A slug: no spaces, no characters that surprise you in a branch or
         # directory name. Rejecting and asking again beats silently rewriting
         # what somebody typed.
@@ -281,6 +318,26 @@ available_agents() {
 
 cmd_start() {
     local base name agent preferred release
+
+    # BEFORE the survey, not after. Asking for a base, a name and an agent and
+    # only then admitting the answer cannot be delivered is the rudest possible
+    # ordering, and it is the one the code had.
+    if [[ -n "${AWT_WRAPPER:-}" && "$AWT_WRAPPER" != "$AWT_PROTOCOL" ]]; then
+        err "Your shell function is out of date and would mishandle the reply."
+        {
+            printf '%s\n' "It speaks protocol ${AWT_WRAPPER}; this tool speaks ${AWT_PROTOCOL}."
+            printf '%s\n' "Almost certainly a copy of awt() pasted into your shell config before"
+            printf '%s\n' "there was a file to source. Fix it once:"
+            printf '%s\n' ""
+            printf '%s\n' "  1. run ./install.sh in the agent-worktrees checkout"
+            printf '%s\n' "  2. delete the awt() function from your shell config"
+            printf '%s\n' "  3. add the single line install.sh prints, then open a new shell"
+            printf '%s\n' ""
+            printf '%s\n' "Everything else keeps working meanwhile: agent-worktrees new <name>"
+            printf '%s\n' "and the other subcommands do not go through the function."
+        } >&2
+        exit 1
+    fi
 
     require_origin
 
@@ -336,7 +393,10 @@ cmd_start() {
         printf '   agent:     %s\n' "$agent"
         printf '   Enter to confirm, anything else to abort: '
     } >&2
-    local confirm; confirm="$(read_line)"
+    # EOF here is NOT an error: a bare Enter and a closed stdin both mean "no
+    # objection", and the confirmation defaults to proceeding. Aborting on EOF
+    # would make `yes "" | awt` behave differently from a human pressing Enter.
+    local confirm; confirm="$(read_line)" || true
     if [[ -n "$confirm" ]]; then
         warn "Aborted — nothing was created."
         exit 0

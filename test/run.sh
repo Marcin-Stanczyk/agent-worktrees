@@ -55,6 +55,35 @@ assert_dir()    { [ -d "$1" ] && return 0; fail "$2: no such directory: $1"; }
 assert_no_dir() { [ ! -d "$1" ] && return 0; fail "$2: directory should be gone: $1"; }
 
 # --------------------------------------------------------------------------
+# A WATCHDOG, BECAUSE A HANGING SUITE IS WORSE THAN A FAILING ONE
+# --------------------------------------------------------------------------
+# Twice while writing these tests, removing a guard turned a scenario from
+# "fails" into "hangs": the survey waited on input nobody was going to give.
+# A failure is a line of output; a hang is a session somebody has to notice and
+# kill, and the second time it left a deliberately broken file on disk.
+#
+# `timeout(1)` is not on macOS, so this is the portable version: run in the
+# background, poll, kill. 20 seconds is far above any real scenario here (the
+# whole suite runs in seconds) and far below anybody's patience.
+TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-20}"
+
+with_timeout() {
+    local pid waited=0
+    "$@" &
+    pid=$!
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ "$waited" -ge "$TIMEOUT_SECONDS" ]; then
+            kill -9 "$pid" 2>/dev/null
+            wait "$pid" 2>/dev/null
+            return 124
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    wait "$pid"
+}
+
+# --------------------------------------------------------------------------
 # Fixtures
 # --------------------------------------------------------------------------
 # A bare repository plus a clone, so `origin/<branch>` is real rather than
@@ -235,7 +264,7 @@ t_protocol() {
     printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/claude"; chmod +x "$TMP/bin/claude"
     local out
     out="$( cd "$repo" && printf '1\nproto\n1\n\n' | \
-        AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" HERDR_PANE_ID="" AWT_WRAPPER=1 \
+        AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" HERDR_PANE_ID="" AWT_WRAPPER=2 \
         PATH="$TMP/bin:$PATH" "$BASH_UNDER_TEST" "$AWT_SH" start 2>/dev/null )"
     assert_eq 5 "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" \
         "5 lines: dir, agent, 3 arguments" || return 0
@@ -250,6 +279,64 @@ t_protocol() {
 # a test of the parsing, and it has to cover a field the real tool cannot
 # currently produce — an argument containing a space — because the protocol
 # promises it and a future config format may well deliver it.
+t_protocol_version_mismatch() {
+    # THE FAILURE THIS WHOLE MECHANISM EXISTS FOR, and it is not hypothetical:
+    # it happened on the author's own machine hours after the format changed,
+    # having written the README section warning about exactly it. An out-of-date
+    # function split the new reply on tabs, found none, handed `cd` all three
+    # lines, and returned 1 with no explanation.
+    scenario "protocol: an out-of-date wrapper is told so, before it is asked anything" || return 0
+    local repo; repo="$(make_repo p1 main develop)"
+    local out rc
+    # </dev/null on purpose. Without it, removing the guard does not fail this
+    # scenario — it HANGS it, waiting on a survey nobody is answering, and a
+    # suite that hangs instead of failing is a suite people stop running.
+    ( cd "$repo" && with_timeout env AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" \
+        HERDR_PANE_ID="" AWT_WRAPPER=1 "$BASH_UNDER_TEST" "$AWT_SH" start \
+        </dev/null >/dev/null 2>"$TMP/e" ) ; rc=$?
+    out="$(cat "$TMP/e")"
+    [ "$rc" -eq 124 ] && { fail "hung instead of refusing — the guard is gone"; return 0; }
+    assert_eq 1 "$rc" "exit code" || return 0
+    assert_contains "$out" "out of date" "says what is wrong" || return 0
+    assert_contains "$out" "install.sh" "says how to fix it" || return 0
+    assert_not_contains "$out" "Session name" \
+        "asked for a name before admitting it could not deliver the answer" || return 0
+    assert_not_contains "$out" "Cut the session off what" "and did not ask for a base either" || return 0
+    done_ok
+}
+
+t_protocol_version_absent() {
+    scenario "protocol: run directly, with no wrapper at all, nothing is refused" || return 0
+    local repo; repo="$(make_repo p2 main develop)"
+    local out
+    local dir
+    dir="$(awt_run "$repo" new direct develop 2>"$TMP/e")"
+    assert_not_contains "$(cat "$TMP/e")" "out of date" "a direct run is not a stale wrapper" || return 0
+    assert_dir "$dir" "the session was created" || return 0
+    done_ok
+}
+
+t_survey_eof() {
+    # Found by a test HANGING rather than failing. `read` fails at end of input,
+    # the old read_line turned that into an empty string, and ask_name rejected
+    # the empty string and asked again — for ever. Anything running the survey
+    # without a human hits it: a pipeline, a CI job, `awt < /dev/null`.
+    scenario "survey: end of input stops with an explanation, it does not spin" || return 0
+    local repo; repo="$(make_repo p3 main develop)"
+    local out rc
+    ( cd "$repo" && with_timeout env AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" \
+        HERDR_PANE_ID="" "$BASH_UNDER_TEST" "$AWT_SH" start \
+        </dev/null >/dev/null 2>"$TMP/e" ) ; rc=$?
+    out="$(cat "$TMP/e")"
+    [ "$rc" -eq 124 ] && { fail "spun on end of input instead of stopping"; return 0; }
+    assert_eq 1 "$rc" "exit code" || return 0
+    assert_contains "$out" "No input" "says what happened" || return 0
+    assert_contains "$out" "agent-worktrees new" "offers the non-interactive route" || return 0
+    assert_eq 0 "$(find "$TMP/p3" -maxdepth 1 -name '*-session-*' 2>/dev/null | wc -l | tr -d ' ')" \
+        "nothing was created" || return 0
+    done_ok
+}
+
 t_wrapper_shell() { # shell
     local sh="$1"
     scenario "wrapper: awt() parses the protocol correctly in $sh" || return 0
@@ -744,6 +831,9 @@ t_no_origin
 t_outside_repo
 t_config
 t_protocol
+t_protocol_version_mismatch
+t_protocol_version_absent
+t_survey_eof
 t_wrapper_shell bash
 t_wrapper_shell zsh
 t_wrapper_plain_shell
