@@ -1,0 +1,49 @@
+# The suite exists because manual testing missed a command that had never once
+# worked. Running it on both platforms matters for the same reason: the bug that
+# mattered most was a bash-3.2-and-pipefail interaction, and macOS is where that
+# bash lives.
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: git version (needs 2.38+ for merge-tree --write-tree)
+        run: git --version
+
+      # zsh is not preinstalled on the Linux runner, and skipping the zsh
+      # checks there would defeat the point: the shell function exists in one
+      # copy precisely so that bash and zsh cannot drift apart, and the bug it
+      # replaced was a zsh-only construct that bash refused to parse.
+      - name: shellcheck and zsh
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq shellcheck zsh
+          else
+            command -v shellcheck >/dev/null || brew install shellcheck
+          fi
+          shellcheck -s bash -e SC2001,SC2016 agent-worktrees.sh install.sh test/run.sh
+          # -e SC3043: `local` is the one non-POSIX construct used, on purpose —
+          # bash, zsh, dash and ksh all have it, and the alternative is leaking
+          # variables into the user's interactive shell.
+          shellcheck -s sh -e SC3043 awt.sh
+          bash -n awt.sh
+          zsh  -n awt.sh
+
+      - name: test suite
+        run: ./test/run.sh
+
+      - name: test suite under the system bash (3.2 on macOS)
+        run: BASH_UNDER_TEST=/bin/bash ./test/run.sh
