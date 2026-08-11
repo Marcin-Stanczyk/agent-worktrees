@@ -90,13 +90,19 @@ with_timeout() {
 # simulated. Branch checks in the tool go through `rev-parse origin/x`, which a
 # fixture without a true remote would answer wrongly.
 make_repo() { # name branch...
-    local name="$1"; shift
+    make_repo_as "$1" work "${@:2}"
+}
+
+# The checkout's directory NAME is now part of the tool's behaviour — it decides
+# what sessions are called — so the fixture has to be able to vary it.
+make_repo_as() { # name checkout-dir branch...
+    local name="$1" checkout="$2"; shift 2
     local d="$TMP/$name"
     mkdir -p "$d"
     git init -q --bare "$d/origin.git"
-    git clone -q "$d/origin.git" "$d/work" 2>/dev/null
+    git clone -q "$d/origin.git" "$d/$checkout" 2>/dev/null
     (
-        cd "$d/work" || exit 1
+        cd "$d/$checkout" || exit 1
         git config user.email t@example.com
         git config user.name "Test"
         git config commit.gpgsign false
@@ -112,7 +118,7 @@ make_repo() { # name branch...
         done
         git checkout -q "$first"
     )
-    printf '%s\n' "$d/work"
+    printf '%s\n' "$d/$checkout"
 }
 
 # The tool, always with herdr disabled and a throwaway HOME.
@@ -354,6 +360,130 @@ t_outside_repo_points_at_one() {
     assert_eq 1 "$rc" "exit code" || return 0
     assert_contains "$err" "Not inside a git repository" "still says so" || return 0
     assert_contains "$err" "cd alpha" "and says where one is" || return 0
+    done_ok
+}
+
+# --------------------------------------------------------------------------
+# WHAT A SESSION IS CALLED, AND WHAT THAT NAME IS NO LONGER ALLOWED TO DECIDE
+# --------------------------------------------------------------------------
+t_naming_strips_the_base_suffix() {
+    scenario "naming: a -base checkout gives <project>-<name>, not <repo>-session-<name>" || return 0
+    local repo; repo="$(make_repo_as n1 kamar-base main develop)"
+    local dir; dir="$(awt_run "$repo" new finanse develop 2>/dev/null)"
+    assert_eq "kamar-finanse" "$(basename "$dir")" "the session directory" || return 0
+    assert_dir "$dir" "and it exists" || return 0
+    done_ok
+}
+
+t_naming_keeps_a_name_with_nothing_redundant() {
+    scenario "naming: a repository with no such suffix keeps its whole name" || return 0
+    local repo; repo="$(make_repo_as n2 agent-worktrees main develop)"
+    local dir; dir="$(awt_run "$repo" new finanse develop 2>/dev/null)"
+    assert_eq "agent-worktrees-finanse" "$(basename "$dir")" "nothing was stripped" || return 0
+    done_ok
+}
+
+t_naming_config_overrides() {
+    scenario "naming: the prefix config key settles it when the guess is wrong" || return 0
+    local repo; repo="$(make_repo_as n3 weird-checkout-name main develop)"
+    printf 'prefix = proj\n' > "$repo/.agent-worktrees.conf"
+    local dir; dir="$(awt_run "$repo" new finanse develop 2>/dev/null)"
+    assert_eq "proj-finanse" "$(basename "$dir")" "the configured prefix won" || return 0
+    done_ok
+}
+
+t_naming_collision_with_a_stranger() {
+    # The hazard the shorter prefix creates. `kamar-base` next to `kamar-checkout`
+    # means `new checkout` aims straight at somebody else's clone — and the old
+    # code would have said "entering the existing one" and started an agent in it.
+    scenario "naming: a directory that is not our worktree is refused, not entered" || return 0
+    local repo; repo="$(make_repo_as n4 kamar-base main develop)"
+    local stranger="$TMP/n4/kamar-checkout"
+    mkdir -p "$stranger"; echo "somebody else's work" > "$stranger/file.txt"
+    local out err rc
+    out="$(awt_run "$repo" new checkout develop 2>"$TMP/e")"; rc=$?
+    err="$(cat "$TMP/e")"
+    assert_eq 1 "$rc" "exit code" || return 0
+    assert_contains "$err" "not a working directory of this repository" "says why" || return 0
+    assert_contains "$err" "prefix =" "and how to settle it" || return 0
+    assert_eq "" "$out" "no path handed back for the shell to enter" || return 0
+    assert_eq "somebody else's work" "$(cat "$stranger/file.txt")" "left untouched" || return 0
+    done_ok
+}
+
+# --------------------------------------------------------------------------
+# CLEAN NO LONGER TRUSTS A DIRECTORY NAME
+# --------------------------------------------------------------------------
+t_clean_ignores_a_lookalike() {
+    # With the prefix shortened to `kamar`, any hand-made worktree called
+    # `kamar-<something>` passes a name test. Provenance is the only thing that
+    # still distinguishes a session from somebody's own working directory.
+    scenario "clean: a worktree this tool never made is left alone despite matching the name" || return 0
+    local repo; repo="$(make_repo_as n5 kamar-base main develop)"
+    local mine; mine="$(awt_run "$repo" new ours develop 2>/dev/null)"
+    local theirs="$TMP/n5/kamar-theirs"
+    git -C "$repo" worktree add -q -b their-branch "$theirs" origin/develop 2>/dev/null
+    awt_run "$repo" clean >/dev/null 2>&1
+    assert_no_dir "$mine" "our own untouched session was removed" || return 0
+    assert_dir "$theirs" "the lookalike survived" || return 0
+    done_ok
+}
+
+# --------------------------------------------------------------------------
+# THE QUESTION `new` NOW ASKS
+# --------------------------------------------------------------------------
+t_new_asks_for_the_base() {
+    scenario "new: asks which branch to cut from, and uses the answer" || return 0
+    local repo; repo="$(make_repo_as n6 kamar-base dev stage prod)"
+    local out dir
+    # Answer 2. detect_bases orders by its own list, so assert against what the
+    # tool itself detected rather than against a guess.
+    dir="$( cd "$repo" && printf '2\n' | AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" \
+        HERDR_PANE_ID="" AWT_ASK=1 "$BASH_UNDER_TEST" "$AWT_SH" new asked 2>"$TMP/e" )"
+    out="$(cat "$TMP/e")"
+    assert_contains "$out" "Cut the session off what?" "the question was asked" || return 0
+    assert_dir "$dir" "a session was created" || return 0
+    assert_contains "$out" "off origin/" "and it says which base it used" || return 0
+    done_ok
+}
+
+t_new_does_not_ask_when_told() {
+    scenario "new: a base on the command line skips the question" || return 0
+    local repo; repo="$(make_repo_as n7 kamar-base main develop)"
+    awt_run "$repo" new told develop >/dev/null 2>"$TMP/e"
+    assert_not_contains "$(cat "$TMP/e")" "Cut the session off what?" \
+        "nothing to ask about" || return 0
+    done_ok
+}
+
+t_new_eof_at_the_base_question_creates_nothing() {
+    # THE `set -e` HOLE. errexit does not reach inside `$( )` — bash inherits it
+    # there only under `shopt -s inherit_errexit`, which the 3.2 on macOS does
+    # not have — and `cmd_new` runs inside `dir="$(cmd_new ...)"`. So a bare
+    # `exit 1` in the base question was demoted to "returned non-zero", and the
+    # tool printed "Nothing was created" and then created it.
+    scenario "new: end of input at the base question creates nothing and says so" || return 0
+    local repo; repo="$(make_repo_as n8 kamar-base main develop)"
+    local rc
+    ( cd "$repo" && with_timeout env AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" \
+        HERDR_PANE_ID="" AWT_ASK=1 "$BASH_UNDER_TEST" "$AWT_SH" new nothing \
+        </dev/null >/dev/null 2>"$TMP/e" ); rc=$?
+    [ "$rc" -eq 124 ] && { fail "hung waiting for input nobody was going to give"; return 0; }
+    assert_eq 1 "$rc" "exit code" || return 0
+    assert_contains "$(cat "$TMP/e")" "Nothing was created" "says nothing was created" || return 0
+    assert_no_dir "$TMP/n8/kamar-nothing" "and means it" || return 0
+    done_ok
+}
+
+t_hotfix_label_matches_what_is_made() {
+    # The survey previewed `session/x` while cmd_new went on to create
+    # `hotfix/x`. One function decides now, so a single-base repository gets a
+    # plain session rather than a hotfix nobody chose.
+    scenario "branch: a repository with one base makes a session, not a hotfix" || return 0
+    local repo; repo="$(make_repo_as n9 kamar-base main)"
+    local dir; dir="$(awt_run "$repo" new only 2>/dev/null)"
+    assert_eq "session/only" "$(git -C "$dir" rev-parse --abbrev-ref HEAD)" \
+        "no hotfix label where there was no choice" || return 0
     done_ok
 }
 
@@ -740,7 +870,10 @@ t_herdr_adopts_pane() {
     close_line="$(grep -n "pane close" "$f/herdr.calls" | head -1 | cut -d: -f1)"
     [ "$move_line" -lt "$close_line" ] || { fail "closed before moving — that takes the workspace with it"; return 0; }
     assert_contains "$calls" "workspace rename ws-1 " "the workspace is renamed" || return 0
-    assert_contains "$(grep 'workspace rename' "$f/herdr.calls")" "-session-lambda" \
+    # The fixture repository is called `work`, so its sessions are `work-<name>`.
+    # The point of the assertion is unchanged: the workspace is named after the
+    # session, not after whatever directory the human happened to be standing in.
+    assert_contains "$(grep 'workspace rename' "$f/herdr.calls")" "work-lambda" \
         "renamed after the SESSION, not after the directory the human was in" || return 0
     done_ok
 }
@@ -994,6 +1127,15 @@ t_help_is_asked_for
 t_new_enters_the_session
 t_new_without_wrapper_still_prints_a_path
 t_new_stale_wrapper_refused
+t_naming_strips_the_base_suffix
+t_naming_keeps_a_name_with_nothing_redundant
+t_naming_config_overrides
+t_naming_collision_with_a_stranger
+t_clean_ignores_a_lookalike
+t_new_asks_for_the_base
+t_new_does_not_ask_when_told
+t_new_eof_at_the_base_question_creates_nothing
+t_hotfix_label_matches_what_is_made
 t_config
 t_config_first_line_has_no_pipe
 t_protocol

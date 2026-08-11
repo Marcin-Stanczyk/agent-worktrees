@@ -97,7 +97,7 @@ fi
 MAIN="$(cd "$MAIN" && pwd)"      # may be a relative path
 MAIN="$(dirname "$MAIN")"        # .../repo/.git -> .../repo
 PARENT="$(dirname "$MAIN")"
-PREFIX="$(basename "$MAIN")-session"
+# PREFIX is set below, once `config` exists — it is now configurable.
 
 # CHANNEL DISCIPLINE, and it is load-bearing.
 # Everything a HUMAN reads goes to stderr. stdout carries one thing only: the
@@ -151,6 +151,94 @@ config() {
     found="$(first_line "$found")"
     [[ -n "$found" ]] || return 1
     printf '%s\n' "$found"
+}
+
+# ---------------------------------------------------------------------------
+# WHAT A SESSION DIRECTORY IS CALLED
+# ---------------------------------------------------------------------------
+# It used to be `<repo>-session-<name>`, which for a checkout called `kamar-base`
+# produced `kamar-base-session-finanse` — a directory name you have to read
+# rather than recognise, and one nobody wants to type. It is now
+# `<prefix>-<name>`: `kamar-finanse`.
+#
+# The prefix is the repository's own directory name, minus a trailing `-base`,
+# `-main`, `-repo` or `-work`. Those suffixes exist to distinguish the primary
+# checkout from its siblings, which is precisely the information a session
+# directory does not need to repeat. A repository called `agent-worktrees` keeps
+# its whole name, because nothing there is redundant.
+#
+# The heuristic is a default, not a rule: `prefix = kamar` in
+# `.agent-worktrees.conf` settles it for any project the guess gets wrong.
+session_prefix() {
+    local configured repo
+    if configured="$(config prefix 2>/dev/null)"; then
+        printf '%s\n' "$configured"; return 0
+    fi
+    repo="$(basename "$MAIN")"
+    case "$repo" in
+        *-base|*-main|*-repo|*-work) repo="${repo%-*}" ;;
+    esac
+    printf '%s\n' "$repo"
+}
+PREFIX="$(session_prefix)"
+
+# EVERY WORKING DIRECTORY OF THIS REPOSITORY, one per line. Three commands used
+# to spell this pipeline out for themselves; a fourth needed it to answer "does
+# that directory belong to us?", which is the question a shorter prefix made
+# newly important.
+worktree_paths() {
+    git -C "$MAIN" worktree list --porcelain | awk '/^worktree /{print substr($0,10)}'
+}
+
+# IS THIS PATH A WORKING DIRECTORY OF THIS REPOSITORY?
+# Deliberately no pipe: `... | grep -qx` exits at the first match, the producer
+# dies of SIGPIPE, and `pipefail` turns the ANSWER YES into a non-zero status —
+# which inside an `if` reads as no. The same trap as `config`, in the one place
+# where getting it backwards would be silent.
+is_worktree_of_ours() {
+    local path="$1" all
+    all="$(worktree_paths)"
+    case $'\n'"$all"$'\n' in
+        *$'\n'"$path"$'\n'*) return 0 ;;
+    esac
+    return 1
+}
+
+# IS THIS BRANCH ONE WE MADE?
+# It used to be a question about the DIRECTORY's name — `<repo>-session-*`. That
+# guard exists because an early version walked every worktree of the repository
+# and deleted other people's, branches included. With the prefix shortened to
+# `kamar`, a hand-made worktree at `kamar-hotfix` would now pass a name test, so
+# the name is no longer evidence of anything.
+#
+# Provenance is. `remember_base` writes `branch.<name>.awtBase` on every session
+# this tool creates and nothing else writes that key; sessions predating it are
+# still called `session/*`. Renaming a session directory therefore no longer
+# hides it from `clean`, and a directory this tool never made can no longer be
+# mistaken for one.
+# WHETHER THERE IS ANYBODY THERE TO ANSWER.
+# `-t 0` is the honest default and the only one most people ever want. The
+# override exists because the alternative is worse in both directions: a suite
+# that cannot test the question without allocating a pseudo-terminal will not
+# test it at all, and a user on an unusual terminal has no way to correct a
+# wrong guess.
+#
+#   AWT_ASK=1   ask even without a terminal
+#   AWT_ASK=0   never ask, take the configured or detected base
+should_ask() {
+    case "${AWT_ASK:-}" in
+        1) return 0 ;;
+        0) return 1 ;;
+    esac
+    [ -t 0 ]
+}
+
+is_session_branch() {
+    local branch="$1"
+    case "$branch" in
+        session/*) return 0 ;;
+    esac
+    [[ -n "$(git -C "$MAIN" config --get "branch.$branch.awtBase" 2>/dev/null || true)" ]]
 }
 
 # Branch names differ wildly between projects, so nothing is hard-coded. If the
@@ -406,15 +494,14 @@ session_agent() {
     printf '%s\n' "plain shell"
 }
 
-cmd_start() {
-    local base name agent preferred release
-
-    require_current_wrapper
-    require_origin
-
-    info "New working session — repository: $(basename "$MAIN")"
-
-    local bases=() b labels=()
+# THE BASE QUESTION, ASKED IN ONE PLACE.
+# The survey has always asked it. `new <name>` now asks it too — being handed a
+# name is not the same as being told which branch to cut it from, and picking
+# silently is how a hotfix ends up carrying a development branch to production.
+# Two copies of this would drift, and the one that drifted would be the one that
+# decides what reaches production.
+ask_base() {
+    local bases=() b labels=() base release
     while IFS= read -r b; do bases+=("$b"); done < <(detect_bases)
     if [ "${#bases[@]}" -eq 0 ]; then
         err "No usable base branch found on origin."
@@ -441,8 +528,50 @@ cmd_start() {
         base="$(choose "Cut the session off what?" "${labels[@]}")"
         base="${base%% *}"
     fi
+    printf '%s\n' "$base"
+}
 
-    name="$(ask_name)"
+# WHICH BRANCH A SESSION GETS, decided in one place.
+# The survey previewed `session/<name>` while `cmd_new` went on to create
+# `hotfix/<name>`: two copies of the rule, and they already differed. In a
+# repository whose only base is `main` the survey said "session", cmd_new made a
+# hotfix, and the confirmation screen — the one place the user is asked to
+# approve exactly this — was the thing that was wrong.
+#
+# A hotfix is a session cut from the release branch WHEN THERE IS SOMETHING ELSE
+# IT COULD HAVE BEEN CUT FROM. In a single-branch repository everything goes to
+# main anyway, so the label carries no information and the warning is noise.
+#
+# `2>/dev/null` on the count: detect_bases warns about bogus config entries, and
+# it has already been called once by whoever asked for the base. Warning twice
+# about one typo reads like two typos.
+branch_for() {
+    local name="$1" base="$2" release all count
+    release="$(release_branch 2>/dev/null || true)"
+    if [[ -n "$release" && "$base" == "$release" ]]; then
+        all="$(detect_bases 2>/dev/null || true)"
+        count="$(printf '%s\n' "$all" | grep -c . || true)"
+        if [[ "$count" -gt 1 ]]; then
+            printf 'hotfix/%s\n' "$name"; return 0
+        fi
+    fi
+    printf 'session/%s\n' "$name"
+}
+
+cmd_start() {
+    local base name agent preferred
+
+    require_current_wrapper
+    require_origin
+
+    info "New working session — repository: $(basename "$MAIN")"
+
+    # Explicit for the same reason as in `cmd_new`, even though `cmd_start` runs
+    # in the main shell where `set -e` would in fact catch it. A rule that
+    # applies here and not thirty lines away is one nobody should have to hold
+    # in their head while reading.
+    base="$(ask_base)" || exit 1
+    name="$(ask_name)" || exit 1
 
     preferred="$(config agent 2>/dev/null || echo claude)"
     # Two passes rather than prepending in place: expanding an EMPTY array under
@@ -453,12 +582,12 @@ cmd_start() {
     for a in "${all[@]}"; do [[ "$a" == "$preferred" ]] || agents+=("$a"); done
     agent="$(choose "Which agent should start?" "${agents[@]}")"
 
-    local is_hotfix="no"
-    [[ -n "$release" && "$base" == "$release" && "${#bases[@]}" -gt 1 ]] && is_hotfix="yes"
+    local previewed_branch
+    previewed_branch="$(branch_for "$name" "$base")"
 
     {
         printf '\n\033[0;33m%s\033[0m\n' "About to create:"
-        printf '   branch:    %s\n' "$([ "$is_hotfix" = yes ] && echo "hotfix/$name" || echo "session/$name")"
+        printf '   branch:    %s\n' "$previewed_branch"
         printf '   base:      origin/%s\n' "$base"
         printf '   directory: %s\n' "$PARENT/$PREFIX-$name"
         printf '   agent:     %s\n' "$agent"
@@ -587,20 +716,56 @@ cmd_new() {
     # named differently — so `git branch` shows at a glance what targets release.
     require_origin
 
-    local release; release="$(release_branch 2>/dev/null || true)"
+    # BEING HANDED A NAME IS NOT BEING TOLD WHICH BRANCH TO CUT IT FROM, and
+    # guessing is how a hotfix ends up carrying a development branch to
+    # production. So when there is a human here and no base was given, ask.
+    #
+    # `|| exit 1` IS LOAD-BEARING, and leaving it out produced a session the
+    # tool had just finished saying it had not created. `set -e` does NOT reach
+    # inside a command substitution — bash inherits errexit there only under
+    # `shopt -s inherit_errexit`, which does not exist in the 3.2 this has to run
+    # on — and `cmd_new` itself runs inside `dir="$(cmd_new ...)"`. So every
+    # failure in here, including a bare `exit 1`, is silently demoted to "that
+    # command returned non-zero" and the function carries on. Answering the base
+    # question with end-of-input therefore printed "Nothing was created" and then
+    # created it, off whichever branch `default_base` happened to like.
+    #
+    # Anything in this function that must stop the work says so explicitly.
+    if [[ -z "$wanted" ]] && should_ask; then
+        wanted="$(ask_base)" || exit 1
+        [[ -n "$wanted" ]] || exit 1
+    fi
     [[ -z "$wanted" ]] && wanted="$(default_base)"
     wanted="${wanted#origin/}"
 
-    local base_ref="origin/$wanted" branch="session/$name"
-    if [[ -n "$release" && "$wanted" == "$release" ]]; then
-        branch="hotfix/$name"
-    fi
+    local base_ref="origin/$wanted" branch
+    branch="$(branch_for "$name" "$wanted")"
 
     local dir="$PARENT/$PREFIX-$name"
 
+    # THE DIRECTORY IS THERE — BUT IS IT OURS?
+    # It used to be enough that something existed at that path; the tool said
+    # "entering the existing one" and handed the path back. With the prefix
+    # shortened from `kamar-base-session-` to `kamar-`, the neighbours suddenly
+    # collide with it: `awt new checkout` next to a `kamar-base` aims squarely at
+    # `kamar-checkout`, an unrelated clone somebody is working in. Entering that
+    # and starting an agent there is the exact accident this tool exists to
+    # prevent, arrived at through the tool itself.
     if [[ -d "$dir" ]]; then
-        warn "Worktree already exists — entering the existing one."
-        echo "$dir"; return 0   # stdout: path only
+        if is_worktree_of_ours "$dir"; then
+            warn "Worktree already exists — entering the existing one."
+            echo "$dir"; return 0   # stdout: path only
+        fi
+        err "There is already something at:"
+        {
+            printf '%s\n' "  $dir"
+            printf '%s\n' "and it is not a working directory of this repository — so it is not a"
+            printf '%s\n' "session of ours and will not be touched."
+            printf '%s\n' ""
+            printf '%s\n' "Pick another name, or set a different prefix in .agent-worktrees.conf:"
+            printf '%s\n' "  prefix = $(basename "$MAIN")"
+        } >&2
+        exit 1
     fi
 
     # ALWAYS off a fresh remote state. Branching off a local branch would drag in
@@ -789,8 +954,26 @@ cmd_list() {
 
     # Which ones a shell is sitting in right now — this is what catches two people
     # working in the same place.
-    local busy
-    busy="$(lsof -a -d cwd -Fn 2>/dev/null | grep "^n$PARENT/$PREFIX" | sed 's/^n//' | sort -u || true)"
+    # Matched on the name prefix once, which with a prefix of `kamar` would also
+    # claim the neighbouring clone `kamar-checkout` — a different repository
+    # entirely — as one of this repository's working directories. Asking git
+    # which directories are ours is both exact and independent of what they are
+    # called.
+    local busy="" cwds p
+    cwds="$(lsof -a -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | sort -u || true)"
+    while IFS= read -r p; do
+        [[ -n "$p" ]] || continue
+        # A shell inside a subdirectory counts: it is still somebody working there.
+        while IFS= read -r c; do
+            [[ -n "$c" ]] || continue
+            if [[ "$c" == "$p" || "$c" == "$p"/* ]]; then
+                busy="${busy}${p}
+"
+                break
+            fi
+        done <<< "$cwds"
+    done <<< "$(worktree_paths)"
+    busy="$(printf '%s' "$busy" | sort -u)"
     if [[ -n "$busy" ]]; then
         echo
         info "Open in shells:"
@@ -832,12 +1015,6 @@ cmd_clean() {
         [[ -d "$path" ]] || continue
         [[ "$path" == "$MAIN" ]] && continue
 
-        # SESSION DIRECTORIES ONLY. Without this condition the cleanup walked
-        # EVERY worktree of the repository and deleted other people's — branches
-        # included. Learned the hard way. "Clean up my sessions" has no business
-        # touching anything else.
-        [[ "$(basename "$path")" == "$PREFIX-"* ]] || continue
-
         # NOT THE ONE YOU ARE STANDING IN. Removing it leaves the shell in a
         # directory that no longer exists, and now that a session owns a herdr
         # workspace it also closes the tab the command was typed into.
@@ -854,6 +1031,18 @@ cmd_clean() {
         local branch base count
         branch="$(git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
         [[ -n "$branch" ]] || continue
+
+        # SESSIONS THIS TOOL MADE, ONLY. Without a condition here the cleanup
+        # walked EVERY worktree of the repository and deleted other people's,
+        # branches included. Learned the hard way.
+        #
+        # It used to be a test on the DIRECTORY's name, and that stopped being
+        # evidence when the prefix shrank to `kamar`: a hand-made worktree at
+        # `kamar-hotfix` would now pass it. `is_session_branch` asks what made
+        # the branch instead — a key only this tool writes — so renaming a
+        # session no longer hides it, and a stranger's worktree cannot be
+        # mistaken for one by accident of naming.
+        is_session_branch "$branch" || continue
 
         base="$(base_of "$branch")"
 
@@ -877,7 +1066,7 @@ cmd_clean() {
         git -C "$MAIN" branch -d "$branch" >/dev/null 2>&1 || true
         ok "  removed: $path"
         removed=$((removed + 1))
-    done < <(git -C "$MAIN" worktree list --porcelain | awk '/^worktree /{print substr($0,10)}')
+    done < <(worktree_paths)
 
     git -C "$MAIN" worktree prune
     ok "Done — removed $removed."
@@ -942,10 +1131,15 @@ cmd_verify() {
     if [[ -d "$projects/$key_main" ]]; then
         local linked=0
         while IFS= read -r p; do
-            [[ "$(basename "$p")" == "$PREFIX-"* ]] || continue
+            [[ -n "$p" && "$p" != "$MAIN" ]] || continue
+            # By provenance, like `clean`, and for the same reason: with a short
+            # prefix the main checkout's own name matches a name test.
+            local br; br="$(git -C "$p" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+            [[ -n "$br" ]] || continue
+            is_session_branch "$br" || continue
             local k; k="$(printf '%s' "$p" | tr '/_' '--')"
             [[ -L "$projects/$k" ]] && linked=$((linked + 1))
-        done < <(git -C "$MAIN" worktree list --porcelain | awk '/^worktree /{print substr($0,10)}')
+        done < <(worktree_paths)
         ok "   sessions with linked memory: $linked"
     else
         warn "   the main project has no memory directory yet — nothing to link"

@@ -79,15 +79,38 @@ awt help                 the above
 ```
 
 **Both `awt` and `awt new` leave you standing in the session with the agent
-running.** The survey asks which agent; `new` takes the one from
-`.agent-worktrees.conf` (or `claude`) without asking, which is what "no questions
-asked" means. `new` used to create the directory and leave you where you were,
+running.** The survey asks for a base, a name and an agent. `new` is handed the
+name and takes the agent from `.agent-worktrees.conf` (or `claude`) — but it
+**asks which branch to cut from**, because being given a name is not being told
+what to branch off, and guessing is how a hotfix ends up carrying a development
+branch to production:
+
+```
+$ awt new finanse
+
+Cut the session off what?
+   1) dev
+   2) stage
+   3) prod — HOTFIX, goes straight to release
+   choice [1]:
+```
+
+The candidates are detected from the remote, not configured — `develop`, `dev`,
+`staging`, `stage`, `main`, `master`, `production`, `prod`, whichever exist —
+and `bases =` overrides the list. Say the base outright and there is nothing to
+ask: `awt new finanse dev`. **Without a terminal — a script, CI, a pipeline —
+nothing is asked and the first detected base is used, exactly as before.**
+
+Any repository, from anywhere inside it: run `awt new` from within a session and
+the new one is created **beside** it, not inside it, because the repository is
+resolved through `git rev-parse --git-common-dir` — which from a worktree points
+at the main checkout. `new` used to create the directory and leave you where you were,
 holding a path you then had to retype — two of those three commands were the
 tool's job:
 
 ```
 awt new finanse
-cd ../kamar-base-session-finanse    # derived by hand from a printed path
+cd ../kamar-finanse                 # derived by hand from a printed path
 claude
 ```
 
@@ -163,6 +186,7 @@ bases      = develop, main         # which branches to offer as a base
 release    = main                  # the branch a hotfix targets
 agent      = claude                # which agent to preselect
 agent_args = --add-dir ../api      # extra flags passed to the agent
+prefix     = kamar                 # what session directories are called
 ```
 
 `agent_args` earns its place on **multi-repository projects**: a worktree only
@@ -173,6 +197,28 @@ anyone whose checkouts sit side by side.
 Without it, the tool looks for the conventional names — `develop`, `dev`,
 `staging`, `stage`, `main`, `master`, `production`, `prod` — and offers the ones
 that actually exist on the remote.
+
+`prefix` decides what session directories are called. The default is the
+repository's own directory name with a trailing `-base`, `-main`, `-repo` or
+`-work` removed, because those suffixes exist to tell the primary checkout from
+its siblings — which is exactly what a session directory does not need to repeat:
+
+```
+~/code/kamar/kamar-base   ->  awt new finanse  ->  ~/code/kamar/kamar-finanse
+~/code/agent-worktrees    ->  awt new finanse  ->  ~/code/agent-worktrees-finanse
+```
+
+Set it explicitly for any project the guess gets wrong. **A short prefix has
+neighbours**: `awt new checkout` beside a `kamar-base` aims at `kamar-checkout`,
+and if that is a different clone rather than a session, the tool refuses and says
+so rather than entering somebody else's working directory.
+
+### Environment
+
+`AWT_ASK=1` makes `new` ask which branch to cut from even without a terminal;
+`AWT_ASK=0` stops it asking even with one. The default — ask a human, never a
+script — is right almost always, and the override exists because the alternative
+is a question nobody can test and a guess nobody can correct.
 
 The file is **parsed strictly, never sourced**: reading configuration with
 `source` means a file in a project directory gets to execute arbitrary code, and

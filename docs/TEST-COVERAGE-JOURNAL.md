@@ -23,6 +23,75 @@ not work because Y" is the most valuable thing here and the first thing lost.
 
 ---
 
+## 2026-08-11 — naming, the base question, and a hole in `set -e`
+
+**Done.** Sessions are `<prefix>-<name>` — `kamar-finanse`, not
+`kamar-base-session-finanse`. The prefix is the repository's directory name
+minus a trailing `-base`/`-main`/`-repo`/`-work`, overridable with `prefix =`.
+`new <name>` now asks which branch to cut from when there is a human present,
+reusing the survey's `ask_base` rather than a second copy of it. 46 → 55
+scenarios.
+
+Three things had to change with it, and none of them were on the list:
+
+- **`clean` stopped trusting directory names.** Its guard was
+  `basename == "$PREFIX-"*`, which exists because an early version deleted other
+  people's worktrees. With the prefix shortened to `kamar`, a hand-made
+  `kamar-hotfix` passes that test. It now asks `is_session_branch` — `session/*`
+  or a `branch.<name>.awtBase` key, which only this tool writes. Renaming a
+  session no longer hides it either.
+- **A neighbour is no longer entered.** `awt new checkout` beside `kamar-base`
+  aims at `kamar-checkout`; the old code said "entering the existing one" and
+  handed the path back, so the wrapper would have started an agent in an
+  unrelated clone. `is_worktree_of_ours` refuses instead.
+- **`list` stopped matching cwds by name prefix**, which with `kamar` would have
+  claimed a different clone as one of this repository's working directories.
+
+**Proven.** 8 of the 9 new scenarios fail against the previous commit —
+`want [kamar-finanse], got [kamar-base-session-finanse]`, `want [1], got [0]`
+for both the collision and the end-of-input case, `hotfix/only` where
+`session/only` was wanted. The ninth,
+`t_clean_ignores_a_lookalike`, passes against both **and that is the point**: it
+pins a safety property that the old code got from a long prefix and the new code
+gets from provenance. Had the prefix been shortened without the second change,
+that scenario is the one that would have caught it.
+
+**Found — the big one. `set -e` does not reach inside `$( )`.** bash inherits
+errexit into a command-substitution subshell only under
+`shopt -s inherit_errexit`, which does not exist in the 3.2 macOS ships, so this
+tool can never rely on it. `cmd_new` runs inside `dir="$(cmd_new ...)"`.
+Therefore **every failure inside `cmd_new`, including a bare `exit 1`, is
+demoted to "that command returned non-zero" and the function carries on.**
+
+Answering the new base question with end-of-input printed *"No input — the
+survey cannot be answered. Nothing was created."* and then created the session
+anyway, off whichever branch `default_base` liked, and exited 0. Reduced to
+fifteen lines:
+
+```bash
+set -euo pipefail
+inner() { exit 1; }
+mid()   { local v; v="$(inner)"; echo "MID CONTINUED"; }
+mid                 # -> exits 1, as expected
+out="$(mid)"        # -> prints MID CONTINUED, exit 0
+```
+
+The same function, the same failure, and whether the script stops depends
+entirely on how the caller was written. Everything in `cmd_new` that must stop
+the work now says `|| exit 1` out loud. This is worth carrying beyond this
+repository: it makes `set -e` useless as a safety net in exactly the place a
+shell script is most likely to put its real logic.
+
+**Also found.** The survey previewed `session/<name>` on its confirmation screen
+while `cmd_new` went on to create `hotfix/<name>` — two copies of one rule, in
+the one place the user is asked to approve exactly that. `branch_for` decides
+once now, and a single-base repository gets a plain session rather than a hotfix
+nobody chose.
+
+**Next.** Nothing new here.
+
+---
+
 ## 2026-08-11 — the same trap, one function further along
 
 **Done.** `config()` ended in `... | head -1 | grep .`, which is the SIGPIPE +
