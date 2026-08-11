@@ -69,7 +69,29 @@ AWT_PROTOCOL=2
 MAIN="$(git rev-parse --git-common-dir 2>/dev/null || true)"
 if [[ -z "$MAIN" ]]; then
     printf '\033[0;31m%s\033[0m\n' "Not inside a git repository." >&2
-    printf '%s\n' "Change into the project you want a session for and try again." >&2
+
+    # SAY WHERE ONE IS, not merely that this is not it. The directory you keep a
+    # project in is usually the PARENT of its checkouts — `kamar/` holding
+    # `kamar-base` and `kamar-checkout` — so standing one level too high is the
+    # ordinary mistake, not an exotic one. The old message sent you off to `ls`
+    # and guess; this one prints the `cd` you were about to type.
+    #
+    # An explicit `if` rather than `[[ ... ]] && found=...`: under `set -e` an
+    # AND-list whose test fails is a failed command, and the first directory
+    # without a .git would end the script in silence.
+    found=""
+    for d in */; do
+        if [[ -e "${d%/}/.git" ]]; then
+            found="${found}  cd ${d%/}
+"
+        fi
+    done
+    if [[ -n "$found" ]]; then
+        printf '%s\n' "Repositories directly below here:" >&2
+        printf '%s' "$found" >&2
+    else
+        printf '%s\n' "Change into the project you want a session for and try again." >&2
+    fi
     exit 1
 fi
 MAIN="$(cd "$MAIN" && pwd)"      # may be a relative path
@@ -298,10 +320,9 @@ ask_name() {
         printf '\n\033[0;36mSession name\033[0m (directory, branch and window all get it)\n' >&2
         printf '   name: ' >&2
         name="$(read_line)" || no_more_input
-        # A slug: no spaces, no characters that surprise you in a branch or
-        # directory name. Rejecting and asking again beats silently rewriting
-        # what somebody typed.
-        if [[ "$name" =~ ^[a-z0-9][a-z0-9-]{1,38}$ ]]; then
+        # Rejecting and asking again beats silently rewriting what somebody
+        # typed. `is_session_name` holds the rule itself.
+        if is_session_name "$name"; then
             printf '%s\n' "$name"; return 0
         fi
         printf '   \033[0;31mlowercase letters, digits and dashes, 2-39 characters\033[0m\n' >&2
@@ -316,29 +337,55 @@ available_agents() {
     printf 'plain shell\n'
 }
 
+# BEFORE anything is created, not after. Doing the work and only then admitting
+# the answer cannot be delivered is the rudest possible ordering, and it is the
+# one the code had. Called by every command that replies through the wrapper —
+# which, since `new` also enters the session, is now two of them.
+require_current_wrapper() {
+    [[ -n "${AWT_WRAPPER:-}" && "$AWT_WRAPPER" != "$AWT_PROTOCOL" ]] || return 0
+    err "Your shell function is out of date and would mishandle the reply."
+    {
+        printf '%s\n' "It speaks protocol ${AWT_WRAPPER}; this tool speaks ${AWT_PROTOCOL}."
+        printf '%s\n' "Almost certainly a copy of awt() pasted into your shell config before"
+        printf '%s\n' "there was a file to source. Fix it once:"
+        printf '%s\n' ""
+        printf '%s\n' "  1. run ./install.sh in the agent-worktrees checkout"
+        printf '%s\n' "  2. delete the awt() function from your shell config"
+        printf '%s\n' "  3. add the single line install.sh prints, then open a new shell"
+        printf '%s\n' ""
+        printf '%s\n' "Everything else keeps working meanwhile: agent-worktrees new <name>"
+        printf '%s\n' "runs without the function and prints the path for you to cd into."
+    } >&2
+    exit 1
+}
+
+# A slug: no spaces, no characters that surprise you in a branch name, a
+# directory name or a `cd`. One definition, because the survey validates what
+# you type and the dispatcher uses the same rule to tell a mistyped command
+# from a session name — and two copies of a regex drift.
+is_session_name() {
+    [[ "$1" =~ ^[a-z0-9][a-z0-9-]{1,38}$ ]]
+}
+
+# WHICH AGENT, WITHOUT ASKING. The survey asks; `new` promises not to, so it
+# takes the configured agent and falls back to the shell rather than failing at
+# the very end — a session that exists is worth having even if the agent is not
+# installed.
+session_agent() {
+    local preferred
+    preferred="$(config agent 2>/dev/null || echo claude)"
+    if command -v "$preferred" >/dev/null 2>&1; then
+        printf '%s\n' "$preferred"
+        return 0
+    fi
+    warn "Agent \"$preferred\" is not in PATH — leaving you in a plain shell."
+    printf '%s\n' "plain shell"
+}
+
 cmd_start() {
     local base name agent preferred release
 
-    # BEFORE the survey, not after. Asking for a base, a name and an agent and
-    # only then admitting the answer cannot be delivered is the rudest possible
-    # ordering, and it is the one the code had.
-    if [[ -n "${AWT_WRAPPER:-}" && "$AWT_WRAPPER" != "$AWT_PROTOCOL" ]]; then
-        err "Your shell function is out of date and would mishandle the reply."
-        {
-            printf '%s\n' "It speaks protocol ${AWT_WRAPPER}; this tool speaks ${AWT_PROTOCOL}."
-            printf '%s\n' "Almost certainly a copy of awt() pasted into your shell config before"
-            printf '%s\n' "there was a file to source. Fix it once:"
-            printf '%s\n' ""
-            printf '%s\n' "  1. run ./install.sh in the agent-worktrees checkout"
-            printf '%s\n' "  2. delete the awt() function from your shell config"
-            printf '%s\n' "  3. add the single line install.sh prints, then open a new shell"
-            printf '%s\n' ""
-            printf '%s\n' "Everything else keeps working meanwhile: agent-worktrees new <name>"
-            printf '%s\n' "and the other subcommands do not go through the function."
-        } >&2
-        exit 1
-    fi
-
+    require_current_wrapper
     require_origin
 
     info "New working session — repository: $(basename "$MAIN")"
@@ -580,7 +627,17 @@ cmd_new() {
     fi
 
     remember_base "$branch" "$base_ref"
-    link_memory "$dir"
+
+    # ASKED, NOT ANNOUNCED. `link_memory` used to print its own line, and since
+    # it runs before the block below you were told "memory: shared..." — indented
+    # under nothing — and only then "Session ready". A detail arriving before its
+    # heading reads like an error. It now reports back and the block says it in
+    # order. Inside `if` on purpose: `set -e` is suspended there, and the answer
+    # "no, not shared" is information, not a failure.
+    local memory_note=""
+    if link_memory "$dir"; then
+        memory_note="  memory:    shared with the main repository (symlink)"
+    fi
 
     # Everything below is for the human, so the whole block is redirected once.
     # Redirecting each call individually is how a bare `echo` slipped onto stdout
@@ -590,6 +647,7 @@ cmd_new() {
         ok "Session ${name} ready."
         info "  directory: $dir"
         info "  branch:    $branch (off $base_ref)"
+        [[ -n "$memory_note" ]] && info "$memory_note"
 
         if [[ "$branch" == hotfix/* ]]; then
             echo
@@ -615,10 +673,13 @@ cmd_new() {
 # That is the worst kind of isolation — we set out to separate FILES and would
 # have separated KNOWLEDGE by accident. So a session's memory directory is a
 # symlink to the main repository's.
+#
+# RETURNS whether the session ends up sharing memory, and prints nothing. The
+# caller says it, in its own order, next to the rest of the summary.
 link_memory() {
     local dir="$1"
     local projects="$HOME/.claude/projects"
-    [[ -d "$projects" ]] || return 0
+    [[ -d "$projects" ]] || return 1
 
     # The directory name is the path with `/` and `_` replaced by `-`.
     local key_main key_session
@@ -628,11 +689,18 @@ link_memory() {
     local src="$projects/$key_main"
     local dst="$projects/$key_session"
 
-    [[ -d "$src" ]] || return 0        # main project has no memory yet
-    [[ -e "$dst" ]] && return 0        # never overwrite an existing one
+    [[ -d "$src" ]] || return 1        # main project has no memory yet
 
-    ln -s "$src" "$dst" 2>/dev/null && \
-        info "  memory:    shared with the main repository (symlink)"
+    # Never overwrite an existing one — but a symlink that is already there is
+    # shared memory, and a real directory sitting in its place is NOT. Reporting
+    # both as "shared" would be a comfortable lie about the one case where an
+    # agent silently starts with an empty head.
+    if [[ -e "$dst" || -L "$dst" ]]; then
+        [[ -L "$dst" ]] && return 0
+        return 1
+    fi
+
+    ln -s "$src" "$dst" 2>/dev/null || return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -905,16 +973,53 @@ cmd_verify() {
     fi
 }
 
-case "${1:-start}" in
-    start|"") cmd_start ;;
-    new)      shift; cmd_new "$@" ;;
-    rehearse) cmd_rehearse ;;
-    verify)   cmd_verify ;;
-    list)     cmd_list ;;
-    clean)    cmd_clean ;;
-    where)    cmd_where ;;
-    *)
-        cat <<HELP
+# ---------------------------------------------------------------------------
+# `new` ALSO PUTS YOU IN THE SESSION
+# ---------------------------------------------------------------------------
+# The survey creates the directory, changes into it and starts the agent. `new`
+# used to create the directory and leave you standing where you were, holding a
+# path you then had to retype:
+#
+#     awt new finanse
+#     cd ../kamar-base-session-finanse     <- derived by hand, from a printed path
+#     claude
+#
+# Two of those three lines were the tool's job. `new` now answers the shell
+# function with the same reply the survey does — directory, agent, arguments —
+# and the function does the `cd` and starts the agent.
+#
+# Run WITHOUT the function (a script, CI, `agent-worktrees new x` by hand) it
+# behaves exactly as before: the path on stdout and nothing else. That is the
+# contract other things already depend on, and entering a session is meaningless
+# to a caller that has no shell to change the directory of.
+cmd_new_and_enter() {
+    require_current_wrapper
+
+    # `local dir; dir=$(...)` on two lines on purpose: `local dir=$(...)` returns
+    # the status of `local`, which succeeds even when the substitution did not,
+    # and a failed creation would sail on to announce a directory that is not
+    # there. `set -e` takes care of the failure itself — cmd_new has already said
+    # what went wrong.
+    local dir
+    dir="$(cmd_new "$@")"
+    [[ -n "$dir" ]] || exit 1
+
+    if [[ -n "${AWT_WRAPPER:-}" ]]; then
+        # ONE FIELD PER LINE — the same protocol cmd_start replies with, and the
+        # reason it is one field per line is documented there.
+        local agent extra
+        agent="$(session_agent)"
+        extra="$(config agent_args 2>/dev/null || true)"
+        # shellcheck disable=SC2086
+        printf '%s\n' "$dir" "$agent" $extra
+        return 0
+    fi
+
+    printf '%s\n' "$dir"
+}
+
+usage() {
+    cat <<HELP
 agent-worktrees — one agent, one working directory
 
   agent-worktrees                     SURVEY: asks for base, name and agent
@@ -924,6 +1029,7 @@ agent-worktrees — one agent, one working directory
   agent-worktrees rehearse            would pulling the base conflict? (changes nothing)
   agent-worktrees clean               remove worktrees with no changes and no commits
   agent-worktrees verify              check that the isolation actually works
+  agent-worktrees help                this text
 
 Configuration (.agent-worktrees.conf in the repository root, all optional):
 
@@ -933,5 +1039,52 @@ Configuration (.agent-worktrees.conf in the repository root, all optional):
   agent_args = --add-dir ../other  extra flags passed to the agent
 
 HELP
-        ;;
+}
+
+# ---------------------------------------------------------------------------
+# A WORD THIS TOOL DOES NOT KNOW IS AN ERROR, AND MUST LOOK LIKE ONE
+# ---------------------------------------------------------------------------
+# It used to print the full help ON STDOUT and exit 0. So `awt finanse` — the
+# most natural thing to type, and a plain typo like `awt lst` — was indeed
+# answered, but with twenty lines that never said "no such command", and with
+# the exit code of a success. Nothing scripting this could tell the difference
+# either.
+#
+# Now: the complaint goes to stderr, the exit code is 2, and if the word looks
+# like a session name the message says which command actually makes one. It does
+# NOT create it — a typo in a subcommand also looks like a session name, and a
+# tool that silently makes a branch and a directory out of a slip is worse than
+# one that asks you to type six more characters.
+unknown_command() {
+    local word="$1"
+    err "No such command: $word"
+
+    # THE ANSWER, OR THE MENU — not both. When the word looks like a session
+    # name the next command is a single line, and burying it under twenty lines
+    # of help repeats the mistake this is fixing: the thing you needed scrolls
+    # off the top. Anything else (a flag, a fragment) gives no such clue, so
+    # there the list of commands IS the answer.
+    if is_session_name "$word"; then
+        {
+            printf '%s\n' "If you meant a session by that name:"
+            printf '%s\n' "  agent-worktrees new $word"
+            printf '%s\n' ""
+            printf '%s\n' "Every command: agent-worktrees help"
+        } >&2
+    else
+        usage >&2
+    fi
+    exit 2
+}
+
+case "${1:-start}" in
+    start|"")       cmd_start ;;
+    new)            shift; cmd_new_and_enter "$@" ;;
+    rehearse)       cmd_rehearse ;;
+    verify)         cmd_verify ;;
+    list)           cmd_list ;;
+    clean)          cmd_clean ;;
+    where)          cmd_where ;;
+    help|-h|--help) usage ;;   # asked for, so: stdout, exit 0
+    *)              unknown_command "$1" ;;
 esac

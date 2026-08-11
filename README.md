@@ -75,6 +75,58 @@ awt where                where you are, off what, how far behind
 awt rehearse             would pulling the base conflict? (changes nothing)
 awt clean                remove worktrees with no changes and no commits
 awt verify               check that the isolation actually works
+awt help                 the above
+```
+
+**Both `awt` and `awt new` leave you standing in the session with the agent
+running.** The survey asks which agent; `new` takes the one from
+`.agent-worktrees.conf` (or `claude`) without asking, which is what "no questions
+asked" means. `new` used to create the directory and leave you where you were,
+holding a path you then had to retype — two of those three commands were the
+tool's job:
+
+```
+awt new finanse
+cd ../kamar-base-session-finanse    # derived by hand from a printed path
+claude
+```
+
+Run **without** the shell function — a script, CI, `agent-worktrees new x` by
+hand — `new` prints the session path on stdout and does nothing else. Entering a
+directory is meaningless to a caller with no shell to enter it in, and the path
+on stdout is what those callers already read.
+
+### A word this tool does not know is an error
+
+`awt finanse` is the most natural thing to type, and it is not a command. It used
+to print the full help **on stdout** and exit **0**, so a typo was
+indistinguishable from success — to you and to anything scripting this. Now it
+goes to stderr, exits 2, and if the word looks like a session name it says which
+command actually makes one:
+
+```
+$ awt finanse
+No such command: finanse
+If you meant a session by that name:
+  agent-worktrees new finanse
+
+Every command: agent-worktrees help
+```
+
+It does **not** create it. A mistyped subcommand also looks like a session name,
+and a tool that silently makes a branch and a directory out of a slip is worse
+than one that asks for six more characters.
+
+Standing outside a repository, the refusal names the repositories directly below
+you, because the directory holding a project's checkouts is where you usually
+are when you get this wrong:
+
+```
+$ awt finanse
+Not inside a git repository.
+Repositories directly below here:
+  cd kamar-base
+  cd kamar-checkout
 ```
 
 ### `rehearse` — the one worth knowing about

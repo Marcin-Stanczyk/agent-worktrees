@@ -23,6 +23,66 @@ not work because Y" is the most valuable thing here and the first thing lost.
 
 ---
 
+## 2026-08-08 — usability — the fast path that stopped one command short
+
+**Done.** Five changes, all from one real attempt to start a session called
+`finanse` in `kamar` that took seven commands:
+
+- `agent-worktrees.sh` — `new` now answers the wrapper with the same reply the
+  survey does (directory, agent, arguments), so `awt new <name>` leaves you
+  standing in the session with the agent running. Without the wrapper it still
+  prints the path and nothing else; that is what scripts and CI read.
+- `awt.sh` — `new` joins `start` in the protocol branch of the `case`.
+- `agent-worktrees.sh` — an unknown word is an error: stderr, exit 2, and the
+  suggestion `agent-worktrees new <word>` when it looks like a session name.
+  `help`/`-h`/`--help` keeps stdout and exit 0, because that one was asked for.
+- `agent-worktrees.sh` — outside a repository, the refusal lists the
+  repositories directly below you instead of telling you to go find one.
+- `agent-worktrees.sh` — `link_memory` reports instead of printing, so the
+  memory line appears under its heading rather than above it.
+
+37 → 45 scenarios. shellcheck clean, suite green under bash 5 and the 3.2 that
+macOS ships.
+
+**Proven.** The new suite run against `HEAD` fails 7 of the 8 assertions it
+adds: exit 0 where 2 is wanted (three scenarios), one protocol line where two
+are wanted, a stale wrapper not refused, no repository named, and the memory
+line above its heading. The eighth — `help` on stdout with exit 0 — passes
+against both, on purpose: it is a **regression guard**, pinning behaviour that
+used to be an accident of the catch-all branch and is now deliberate. So is
+`new` without the wrapper still printing exactly one line.
+
+**Found.** Three things, none in the plan.
+
+1. **The catch-all branch was the bug.** `*) cat <<HELP` printed 20 lines to
+   **stdout** and exited **0**. So `awt finanse` was, to the shell and to any
+   script, a success that produced help text — and to a human, a wall with no
+   sentence in it saying "no such command". The single most natural thing to
+   type had the least informative answer in the tool.
+
+2. **A fast path that stops short is slower than the slow path.** `new` was
+   documented as "no questions asked" and it created the directory correctly —
+   but the survey creates it *and* enters it *and* starts the agent, so the
+   "fast" path cost two extra hand-typed commands, one of them a directory name
+   derived by hand from a printed path (`../kamar-base-session-finanse`). The
+   asymmetry was invisible from inside either code path; it is only visible in a
+   transcript of somebody using both. A smaller symptom of the same gap: on a
+   second `new` with the same name the tool printed "Worktree already exists —
+   **entering** the existing one" and then did not enter it. The sentence was
+   written for a version of `new` that had never existed; it is true now.
+
+3. **`set -e` and `link_memory` were one `ln` away from a silent stop.** The old
+   body ended in `ln -s ... && info ...`; had the symlink ever failed, the
+   function would have returned 1 as the last command of a simple call in
+   `cmd_new`, ending the script *after* the worktree existed and *before* it was
+   announced. Rewriting it to return a status on purpose removed the trap along
+   with the ordering problem.
+
+**Next.** Nothing here. The open item is still the ranking decision in
+[`NEXT-SESSION.md`](NEXT-SESSION.md), still blocked on 30 days of data.
+
+---
+
 ## 2026-08-08 — closing pass — the fix that had not reached the machine it was written on
 
 **Done.** Protocol versioning, an end-of-input guard, and a watchdog in the

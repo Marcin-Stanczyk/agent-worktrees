@@ -241,6 +241,122 @@ t_outside_repo() {
     done_ok
 }
 
+# THE SESSION THAT TOOK SEVEN COMMANDS.
+# Reconstructed from a real attempt: `awt finanse` outside a repository, then
+# `awt finanse` inside one — which printed the help on stdout and exited 0 — then
+# `awt new finanse`, then a hand-derived `cd`, then the agent. Every scenario
+# below is one of those steps refusing to happen again.
+t_unknown_command() {
+    scenario "a word that is not a command fails, on stderr, with the command that was meant" || return 0
+    local repo; repo="$(make_repo u1 main develop)"
+    local out err rc
+    out="$(awt_run "$repo" finanse 2>"$TMP/e")"; rc=$?
+    err="$(cat "$TMP/e")"
+    # Exit 0 was the actual bug: a typo was indistinguishable from success.
+    assert_eq 2 "$rc" "exit code" || return 0
+    assert_contains "$err" "No such command: finanse" "says what is wrong" || return 0
+    assert_contains "$err" "agent-worktrees new finanse" "says what was meant" || return 0
+    assert_eq "" "$out" "nothing on stdout — stdout is for results" || return 0
+    # The answer, not the menu: burying one line under twenty repeats the fault.
+    assert_not_contains "$err" "SURVEY: asks for base" \
+        "did not bury the suggestion under the whole help" || return 0
+    assert_contains "$err" "agent-worktrees help" "but says where the whole help is" || return 0
+    # And it must NOT have created anything on a guess.
+    assert_no_dir "$(dirname "$repo")/work-session-finanse" "created nothing" || return 0
+    done_ok
+}
+
+t_unknown_command_typo() {
+    scenario "a mistyped subcommand is not turned into a session" || return 0
+    local repo; repo="$(make_repo u2 main develop)"
+    local rc
+    awt_run "$repo" lst >/dev/null 2>"$TMP/e"; rc=$?
+    assert_eq 2 "$rc" "exit code" || return 0
+    assert_no_dir "$(dirname "$repo")/work-session-lst" "no session named after the typo" || return 0
+    done_ok
+}
+
+t_unknown_flag_gets_the_list() {
+    scenario "a fragment that is not a session name gets the list of commands" || return 0
+    local repo; repo="$(make_repo u7 main develop)"
+    local rc
+    awt_run "$repo" --wat >/dev/null 2>"$TMP/e"; rc=$?
+    assert_eq 2 "$rc" "exit code" || return 0
+    assert_contains "$(cat "$TMP/e")" "SURVEY: asks for base" \
+        "no name to guess at, so the commands are the answer" || return 0
+    done_ok
+}
+
+t_help_is_asked_for() {
+    scenario "help asked for goes to stdout and exits 0" || return 0
+    local repo; repo="$(make_repo u3 main develop)"
+    local out rc
+    out="$(awt_run "$repo" help 2>"$TMP/e")"; rc=$?
+    assert_eq 0 "$rc" "exit code" || return 0
+    assert_contains "$out" "SURVEY" "the help is on stdout when it was requested" || return 0
+    assert_eq "" "$(cat "$TMP/e")" "and nothing is complained about" || return 0
+    done_ok
+}
+
+t_new_enters_the_session() {
+    # `new` used to create the directory and leave you where you were, holding a
+    # path to retype. It now answers the wrapper exactly as the survey does.
+    scenario "new: replies with directory and agent, so the shell can enter it" || return 0
+    local repo; repo="$(make_repo u4 main develop)"
+    mkdir -p "$TMP/bin"
+    printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/claude"; chmod +x "$TMP/bin/claude"
+    local out
+    out="$( cd "$repo" && AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" HERDR_PANE_ID="" \
+        AWT_WRAPPER=2 PATH="$TMP/bin:$PATH" \
+        "$BASH_UNDER_TEST" "$AWT_SH" new entered develop 2>/dev/null )"
+    assert_eq 2 "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "two lines: dir, agent" || return 0
+    assert_dir "$(printf '%s\n' "$out" | sed -n 1p)" "line 1 is the session directory" || return 0
+    assert_eq "claude" "$(printf '%s\n' "$out" | sed -n 2p)" "line 2 is the agent" || return 0
+    done_ok
+}
+
+t_new_without_wrapper_still_prints_a_path() {
+    # The other half of the same change: scripts and CI have no shell to enter,
+    # and the path on stdout is the contract they already rely on.
+    scenario "new: run without the wrapper, stdout is still the path and nothing else" || return 0
+    local repo; repo="$(make_repo u5 main develop)"
+    local out
+    out="$(awt_run "$repo" new scripted develop 2>/dev/null)"
+    assert_eq 1 "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "one line only" || return 0
+    assert_dir "$out" "and it is the session directory" || return 0
+    done_ok
+}
+
+t_new_stale_wrapper_refused() {
+    scenario "new: an out-of-date wrapper is refused before anything is created" || return 0
+    local repo; repo="$(make_repo u6 main develop)"
+    local rc
+    ( cd "$repo" && AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" HERDR_PANE_ID="" \
+        AWT_WRAPPER=1 "$BASH_UNDER_TEST" "$AWT_SH" new refused develop ) \
+        >/dev/null 2>"$TMP/e"; rc=$?
+    assert_eq 1 "$rc" "exit code" || return 0
+    assert_contains "$(cat "$TMP/e")" "out of date" "says what is wrong" || return 0
+    assert_no_dir "$(dirname "$repo")/work-session-refused" "created nothing first" || return 0
+    done_ok
+}
+
+t_outside_repo_points_at_one() {
+    # The message used to say "change into the project and try again" to somebody
+    # standing in the directory that HOLDS the projects — one `cd` away, with the
+    # answer on screen if only it had been printed.
+    scenario "outside a repository: names the repositories one level below" || return 0
+    local d="$TMP/holder"; mkdir -p "$d/alpha" "$d/notes"
+    git init -q "$d/alpha"
+    local err rc
+    ( cd "$d" && AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" HERDR_PANE_ID="" \
+        "$BASH_UNDER_TEST" "$AWT_SH" list ) >/dev/null 2>"$TMP/e"; rc=$?
+    err="$(cat "$TMP/e")"
+    assert_eq 1 "$rc" "exit code" || return 0
+    assert_contains "$err" "Not inside a git repository" "still says so" || return 0
+    assert_contains "$err" "cd alpha" "and says where one is" || return 0
+    done_ok
+}
+
 t_config() {
     scenario "config: bases and release are read, a wrong entry warns and is skipped" || return 0
     local repo; repo="$(make_repo r6 main develop staging)"
@@ -457,12 +573,21 @@ t_memory_symlink() {
     key="$(printf '%s' "$repo" | tr '/_' '--')"
     mkdir -p "$FAKE_HOME/.claude/projects/$key"
     echo "remembered" > "$FAKE_HOME/.claude/projects/$key/note.txt"
-    local session; session="$(awt_run "$repo" new theta develop 2>/dev/null)"
+    local session; session="$(awt_run "$repo" new theta develop 2>"$TMP/e")"
     local skey; skey="$(printf '%s' "$session" | tr '/_' '--')"
     [ -L "$FAKE_HOME/.claude/projects/$skey" ] || { fail "no symlink for the session"; return 0; }
     assert_eq "remembered" \
         "$(cat "$FAKE_HOME/.claude/projects/$skey/note.txt" 2>/dev/null)" \
         "the session sees the main project's memory" || return 0
+
+    # ORDER, because it is the difference between a summary and a puzzle: the
+    # memory line used to be printed by link_memory as it ran, which put an
+    # indented detail ABOVE the heading it belongs under.
+    local heading memory
+    heading="$(grep -n 'ready\.' "$TMP/e" | head -1 | cut -d: -f1)"
+    memory="$(grep -n 'memory:' "$TMP/e" | head -1 | cut -d: -f1)"
+    [ -n "$heading" ] && [ -n "$memory" ] || { fail "expected both a heading and a memory line"; return 0; }
+    [ "$heading" -lt "$memory" ] || { fail "the memory line came before its heading"; return 0; }
     done_ok
 }
 
@@ -829,6 +954,14 @@ t_new_twice
 t_new_bad_base
 t_no_origin
 t_outside_repo
+t_outside_repo_points_at_one
+t_unknown_command
+t_unknown_command_typo
+t_unknown_flag_gets_the_list
+t_help_is_asked_for
+t_new_enters_the_session
+t_new_without_wrapper_still_prints_a_path
+t_new_stale_wrapper_refused
 t_config
 t_protocol
 t_protocol_version_mismatch

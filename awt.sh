@@ -24,8 +24,13 @@ awt() {
     # without installing over somebody's real one.
     : "${AWT_CLI:=$HOME/.local/bin/agent-worktrees}"
 
+    # `new` IS IN HERE TOO, and that is the whole point of it being here.
+    # `new` creates a session; a session you are not standing in is a path you
+    # have to retype. It answers with the same reply as `start`, so it takes the
+    # same branch. Every other subcommand (`list`, `where`, `clean`, ...) prints
+    # for a human and needs nothing from the shell, so it goes straight through.
     case "${1:-start}" in
-        start|"")
+        start|""|new)
             # A process cannot change its parent shell's directory. So the script
             # hands us the path and we do the `cd` here — which is also why you
             # stay in the session after the agent exits.
@@ -38,7 +43,11 @@ awt() {
             # answer a wrapper that speaks an older one rather than emitting a
             # reply it knows will be mishandled — which is what happened, in
             # silence, when the format last changed.
-            awt_out="$(AWT_WRAPPER=2 "$AWT_CLI" start)" || return 1
+            # "$@" rather than a literal `start`: the same branch now serves
+            # `new <name> [base]`, and those arguments have to reach the tool.
+            # With no arguments at all "$@" expands to nothing and the tool
+            # defaults to the survey, which is what `awt` on its own means.
+            awt_out="$(AWT_WRAPPER=2 "$AWT_CLI" "$@")" || return 1
 
             # ONE FIELD PER LINE: directory, agent, then one argument per line.
             # Read into the positional parameters a line at a time, so no shell
