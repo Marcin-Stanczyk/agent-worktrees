@@ -23,6 +23,35 @@ not work because Y" is the most valuable thing here and the first thing lost.
 
 ---
 
+## 2026-08-11 — the same trap, one function further along
+
+**Done.** `config()` ended in `... | head -1 | grep .`, which is the SIGPIPE +
+`pipefail` trap that made `new <name>` fail in every repository — the one
+`default_base` was rewritten for. It survived there because the failure mode is
+different and worse: the pipeline prints the value and *then* returns non-zero,
+so `config agent 2>/dev/null || echo claude` answers `claude\nclaude`. A
+two-line agent name is not on `PATH`, so `session_agent` quietly downgrades the
+session to a plain shell — a session with no agent in it, reported as success.
+Replaced with `first_line()`, a parameter expansion with no pipe and no second
+process; `default_base` and `herdr_forget` now use it too, so no `head -1`
+remains on any path that matters. 45 → 46 scenarios.
+
+**Proven.** `t_config_first_line_has_no_pipe` against the previous commit:
+`want [claude], got [plain shell]`.
+
+**Found.** Whether this fires depends on whether the producer's output fits in
+the 64 KB pipe buffer, which is why a plausible config file never triggers it
+and the test fixture has to be absurd (5 000 duplicate keys) to force it. That
+is the whole reason the class keeps coming back: it works by luck until the
+input grows, and the luck is invisible in review. It was found this time by
+grepping for the shape — `| head`, `| grep`, `| jq` under `set -e` — rather than
+by anything failing.
+
+**Next.** Nothing new. The ranking decision in
+[`NEXT-SESSION.md`](NEXT-SESSION.md) is still the only open item.
+
+---
+
 ## 2026-08-08 — usability — the fast path that stopped one command short
 
 **Done.** Five changes, all from one real attempt to start a session called

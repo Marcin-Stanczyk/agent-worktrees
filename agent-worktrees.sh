@@ -104,6 +104,19 @@ PREFIX="$(basename "$MAIN")-session"
 # session path, and the tab-separated protocol line the shell function parses.
 # When these mixed, the wrapper did `cd` on a coloured banner glued to the path
 # and failed with "no such file or directory: <escape codes>New working session…".
+# ---------------------------------------------------------------------------
+# THE FIRST LINE OF SOMETHING, WITHOUT A PIPE
+# ---------------------------------------------------------------------------
+# `head -1` is the obvious way and it is the one that cost this tool a release.
+# Under `set -euo pipefail` head closes the pipe after the first line, the
+# producer is killed by SIGPIPE, and pipefail turns 141 into the status of the
+# whole pipeline — so the pipeline FAILS after having printed the right answer.
+# Whether it happens at all depends on whether the producer's output fits in the
+# pipe buffer, which is why it looks like it works until one day it does not.
+#
+# A parameter expansion has no pipe, no second process and no race.
+first_line() { printf '%s\n' "${1%%$'\n'*}"; }
+
 color() { printf '\033[%sm%s\033[0m\n' "$1" "$2" >&2; }
 info()  { color '0;36' "$1"; }
 ok()    { color '0;32' "$1"; }
@@ -122,11 +135,22 @@ err()   { color '0;31' "$1"; }
 #   release    = main
 #   agent      = claude
 #   agent_args = --add-dir ../sibling-repo
+#
+# NOTE THE ABSENCE OF `| head -1`, AND IT IS NOT PEDANTRY. `producer | head -1`
+# under `set -euo pipefail` is the bug that made `new <name>` fail in EVERY
+# repository, in silence: head closes the pipe, the producer dies of SIGPIPE,
+# pipefail reports 141 for the whole pipeline. Here the value has ALREADY been
+# printed by then, so `config agent || echo claude` returned "claude\nclaude" —
+# a two-line agent name that `command -v` cannot find. Cutting the first line
+# with a parameter expansion involves no pipe and therefore no race.
 config() {
-    local file="$MAIN/.agent-worktrees.conf" key="$1"
+    local file="$MAIN/.agent-worktrees.conf" key="$1" found
     [[ -f "$file" ]] || return 1
-    sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//p" "$file" \
-        | sed 's/[[:space:]]*$//' | head -1 | grep . || return 1
+    found="$(sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//p" "$file" \
+             | sed 's/[[:space:]]*$//')"
+    found="$(first_line "$found")"
+    [[ -n "$found" ]] || return 1
+    printf '%s\n' "$found"
 }
 
 # Branch names differ wildly between projects, so nothing is hard-coded. If the
@@ -193,7 +217,7 @@ release_branch() {
 default_base() {
     local all
     all="$(detect_bases)" || true
-    printf '%s\n' "$all" | head -1
+    first_line "$all"
 }
 
 # EVERY base is a remote ref, so a repository without `origin` can answer none of
@@ -793,7 +817,8 @@ herdr_forget() {
     id="$(herdr workspace list 2>/dev/null \
           | jq -r --arg p "$path" \
               '.result.workspaces[]? | select(.worktree.checkout_path == $p) | .workspace_id' \
-              2>/dev/null | head -1)"
+              2>/dev/null)"
+    id="$(first_line "$id")"
     [[ -n "$id" ]] || return 0
 
     herdr workspace close "$id" >/dev/null 2>&1 && info "    herdr: closed workspace $id"

@@ -372,6 +372,38 @@ t_config() {
     done_ok
 }
 
+# THE TRAP THIS REPOSITORY HAS ALREADY PAID FOR ONCE.
+# `producer | head -1` under `set -euo pipefail` returns 141 when the producer
+# is still writing — after the value has been printed. `config` did exactly that,
+# so `config agent || echo claude` could answer "claude\nclaude": a two-line
+# agent name, which `command -v` cannot find, which silently downgrades a session
+# to a plain shell with no agent in it.
+#
+# The fixture is absurd on purpose. Whether the pipe fills before `head` exits is
+# the ONLY thing separating this from working by luck, so the test forces it
+# rather than hoping for it — the same accident sat unnoticed in `default_base`
+# through an entire release because a short branch list always fit.
+t_config_first_line_has_no_pipe() {
+    scenario "config: a value is one line even when the producer outfills the pipe" || return 0
+    local repo; repo="$(make_repo c1 main develop)"
+    local i=0
+    : > "$repo/.agent-worktrees.conf"
+    while [ "$i" -lt 5000 ]; do
+        printf 'agent = claude\n' >> "$repo/.agent-worktrees.conf"
+        i=$((i + 1))
+    done
+    mkdir -p "$TMP/bin"
+    printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/claude"; chmod +x "$TMP/bin/claude"
+    local out
+    out="$( cd "$repo" && AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" HERDR_PANE_ID="" \
+        AWT_WRAPPER=2 PATH="$TMP/bin:$PATH" \
+        "$BASH_UNDER_TEST" "$AWT_SH" new pipefull develop 2>/dev/null )"
+    assert_eq 2 "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "two lines: dir, agent" || return 0
+    assert_eq "claude" "$(printf '%s\n' "$out" | sed -n 2p)" \
+        "the agent survived the pipe, rather than becoming a plain shell" || return 0
+    done_ok
+}
+
 t_protocol() {
     scenario "wrapper protocol: one field per line, arguments kept separate" || return 0
     local repo; repo="$(make_repo r7 main develop)"
@@ -963,6 +995,7 @@ t_new_enters_the_session
 t_new_without_wrapper_still_prints_a_path
 t_new_stale_wrapper_refused
 t_config
+t_config_first_line_has_no_pipe
 t_protocol
 t_protocol_version_mismatch
 t_protocol_version_absent
