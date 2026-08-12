@@ -23,6 +23,52 @@ not work because Y" is the most valuable thing here and the first thing lost.
 
 ---
 
+## 2026-08-12 — the entry below overstates #130, and I am the one who amplified it
+
+**Done.** Nothing in the code. The entry below describes brain-mcp's **#130** as
+"five months of a shop without those payment methods". That is wrong, it is in
+this repository's record and in the message of commit `300d9ae`, and a commit
+message cannot be corrected — so it is corrected here.
+
+**Corrected, and verified against the lesson itself rather than taken on trust.**
+#130 says why nobody noticed, and the reason is also the limit of the damage:
+`update_order_review` — the AJAX call every checkout makes — is **not** covered by
+the optimiser's per-action map, so it loads all plugins and re-renders the payment
+fragment **with** PayU and P24. Normal checkout therefore healed itself the moment
+a customer typed their address, and a second mu-plugin hides the methods until
+`updated_checkout`, so there was not even a flicker to see. **The order-pay page
+has no `update_order_review`** — so the permanent loss was confined to customers
+returning to retry payment on an existing order.
+
+Real, and `critical` in #130 is deserved. Not months of lost revenue, and it must
+not be put to Marcin that way.
+
+**Found — two failures, and only one of them is theirs.** brain-mcp read #130's
+header, saw the date range, and wrote it up with a price. Their own base holds
+**#309**, which warns about exactly this: a report said "232 blocked attempts",
+which reads as 232 lost orders, while the real loss was **18** because 92.5%
+ordered within the hour — and its rule is *always count the RECOVERY, not the
+blocking events*. They walked into it while writing a lesson about reading
+evidence, with the counter-lesson one query away.
+
+Mine is the second failure and it is not smaller. I took a secondhand summary,
+did not read the source, and **promoted it to the headline of my report** — "the
+most important thing from these two days", with a budget argument attached. The
+peer supplied a claim; I am the one who raised its rank without checking it. A
+relay that adds emphasis has taken responsibility for the content, and this is the
+second time today the useful outcome came from somebody measuring instead of
+agreeing. The first time I was the one corrected. The direction is not the point.
+
+**Open, not acted on.** Sizing the real cost needs a production query — orders
+from `order-pay` in the February–July window against after 10 July, split by
+payment method and status. That is kamar's production, not this repository's
+business, and neither session is doing it off its own bat. It goes to Marcin as a
+decision.
+
+**Next.** Nothing new.
+
+---
+
 ## 2026-08-12 — auditing our own exclusion list
 
 **Done.** The three suppressed shellcheck codes in CI now each carry what they
