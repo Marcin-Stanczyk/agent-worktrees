@@ -762,7 +762,9 @@ t_memory_symlink() {
     local heading memory
     heading="$(grep -n 'ready\.' "$TMP/e" | head -1 | cut -d: -f1)"
     memory="$(grep -n 'memory:' "$TMP/e" | head -1 | cut -d: -f1)"
-    [ -n "$heading" ] && [ -n "$memory" ] || { fail "expected both a heading and a memory line"; return 0; }
+    if [ -z "$heading" ] || [ -z "$memory" ]; then
+        fail "expected both a heading and a memory line"; return 0
+    fi
     [ "$heading" -lt "$memory" ] || { fail "the memory line came before its heading"; return 0; }
     done_ok
 }
