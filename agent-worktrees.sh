@@ -1147,7 +1147,7 @@ cmd_verify() {
 
     info "4. Herdr"
     if have_herdr; then
-        ok "   available ($(herdr --version 2>/dev/null | head -1))"
+        ok "   available ($(first_line "$(herdr --version 2>/dev/null || true)"))"
 
         # Drift between herdr's registry and the filesystem. Reported, not fixed:
         # `clean` fixes what it removes, but entries left by a plain

@@ -487,6 +487,37 @@ t_hotfix_label_matches_what_is_made() {
     done_ok
 }
 
+t_no_early_exit_pipelines() {
+    # THE PATTERN, NOT THE SYMPTOM — made executable.
+    #
+    # `producer | head -N` and `producer | grep -q` both close the pipe early,
+    # the producer dies of SIGPIPE, and `pipefail` reports 141 for the whole
+    # pipeline. This repository has now paid for that three times, each with a
+    # different symptom: the script dying in silence (default_base, and
+    # `new <name>` did not work in ANY repository for a release), a value being
+    # printed and the status failing anyway (config, which downgraded sessions to
+    # a shell with no agent), and — the one that never happened here only because
+    # it was written the long way — a condition returning the OPPOSITE of the
+    # truth, since inside `if` a SIGPIPE'd success reads as failure.
+    #
+    # A journal entry describes the occurrence it was written about. This finds
+    # the next one. Comment lines are excluded on purpose: the file explains the
+    # trap at length and must be allowed to name it.
+    scenario "guard: no pipeline in the shipped scripts exits early enough to SIGPIPE its producer" || return 0
+    local f hits=""
+    for f in "$ROOT/agent-worktrees.sh" "$ROOT/awt.sh" "$ROOT/install.sh"; do
+        local found
+        found="$(grep -nE '\| *(head|grep -q)' "$f" | grep -vE '^[0-9]+:[[:space:]]*#' || true)"
+        [ -n "$found" ] && hits="$hits$(basename "$f"): $found
+"
+    done
+    if [ -n "$hits" ]; then
+        fail "early-exit pipeline(s): $(printf '%s' "$hits" | tr '\n' ' ')"
+        return 0
+    fi
+    done_ok
+}
+
 t_nothing_written_to_the_real_home() {
     # RUNS LAST, and it is the one scenario whose subject is the suite itself.
     # It asserts the negative the other 55 cannot: that no scenario, anywhere,
@@ -1228,6 +1259,7 @@ t_install_symlinks
 t_install_idempotent
 t_install_warns_about_pasted_copy
 t_install_reports_herdr_without_demanding_it
+t_no_early_exit_pipelines
 t_nothing_written_to_the_real_home
 
 printf '\n'

@@ -23,6 +23,42 @@ not work because Y" is the most valuable thing here and the first thing lost.
 
 ---
 
+## 2026-08-12 — the pattern, made executable
+
+**Done.** A scenario that greps the three shipped scripts for `| head` and
+`| grep -q` outside comments and fails on any hit. The last live instance —
+`herdr --version | head -1` in `verify` — now goes through `first_line`, so the
+count the guard defends is zero rather than a list of exceptions. Also: CI pins
+shellcheck to one version (`d9a393f`), because apt shipped 0.9.0 and brew 0.11.0
+and the two disagreed about SC2015 — the Linux job went red on a line that
+passed on macOS and on the machine that wrote it. 56 → 57 scenarios.
+
+**Proven.** Reintroducing `printf '%s\n' "$all" | head -1` in `default_base`
+turns the guard red with `agent-worktrees.sh: 308:` and the offending line. That
+is the exact regression: this is the function whose `head -1` meant
+`new <name>` did not work in ANY repository, for a release.
+
+**Found.** This repository has paid for one trap three times with three different
+symptoms: the script dying in silence (`default_base`), a value printed and the
+status failing anyway (`config`, which downgraded sessions to a shell with no
+agent), and the one that never happened here only because it was written the long
+way — a condition returning the OPPOSITE of the truth, since inside `if` a
+SIGPIPE'd success reads as failure. Three journal entries would have described
+three occurrences. One grep finds the fourth.
+
+Reported to brain-mcp, where it became **#365** with `repeats: 258` — the first
+use of a `repeats` field they added in response, after their semantic duplicate
+detector merged **#363 and #364** at similarity 0.999 on an identical 148-character
+provenance footer. **That footer is ours**: both lessons were sent from here with
+the same "source: session agent-worktrees @ <sha>, journal entry <date>" line, so
+two unrelated traps looked like one lesson. Provenance belongs in a field, not in
+prose that a similarity measure will read as content — worth remembering the next
+time anything is written to be matched later.
+
+**Next.** Nothing new.
+
+---
+
 ## 2026-08-12 — a guard suggested by another repository's suite
 
 **Done.** The suite now runs under a throwaway `HOME` of its own
