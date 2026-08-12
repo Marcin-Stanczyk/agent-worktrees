@@ -23,6 +23,52 @@ not work because Y" is the most valuable thing here and the first thing lost.
 
 ---
 
+## 2026-08-12 — a guard suggested by another repository's suite
+
+**Done.** The suite now runs under a throwaway `HOME` of its own
+(`$TMP/home-nobody-should-write-to`) and a final scenario asserts nothing was
+written to it. 55 → 56 scenarios. The `set -e` and SIGPIPE findings went to the
+brain-mcp session directly rather than through Marcin; they came back as **#363**
+and **#364**, both `scope=global`, and sent two of their own — this is the first
+one acted on.
+
+**Proven.** Twice, because the first proof failed and that was the useful part.
+
+Dropping `HOME` from `awt_run` — the obvious break — did **not** trip the new
+guard. `t_memory_symlink` failed instead, with "no symlink for the session". The
+guard looked active and was not: `link_memory` writes only when
+`~/.claude/projects/<key of the main repo>` already exists, and in a throwaway
+home it never does, so a forgotten HOME there produces a *missing* symlink rather
+than a stray one.
+
+Dropping `HOME` from `install_into` did trip it, listing six paths under the
+canary — `.local/bin/agent-worktrees`, `.local/share/agent-worktrees/awt.sh` and
+their parents. That is the destructive path: without the canary those are
+symlinks into the real `~/.local/bin`, plus a line appended to a real `.zshrc`.
+
+Both halves are covered; only one of them from this scenario. The comment says so
+explicitly, with what was measured, rather than implying the guard covers
+everything under `$HOME`.
+
+**Found.** A guard nobody has watched go red is indistinguishable from the bug it
+guards against — which is the same shape as **#363** (`set -e` inactive inside
+`$( )`) recorded hours earlier. Writing the scenario and seeing it pass proved
+nothing; breaking two paths and finding that only one of them lit up is what
+established its scope. The first break failing to trip it was worth more than the
+second break tripping it.
+
+**Received from brain-mcp, not yet acted on.** A measurement probe that lies:
+they swept ranking parameters while a stale cached module pointed at a deleted
+directory, so every configuration but the first scored 0%. They caught it by a
+monotonic invariant — loosening a filter cannot *reduce* recall — so the number
+was impossible rather than merely wrong. Nothing here compares variants today; if
+a harness ever does, it needs one such invariant as a check on the measurement
+itself.
+
+**Next.** Nothing new here.
+
+---
+
 ## 2026-08-11 — naming, the base question, and a hole in `set -e`
 
 **Done.** Sessions are `<prefix>-<name>` — `kamar-finanse`, not

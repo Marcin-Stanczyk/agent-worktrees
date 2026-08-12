@@ -487,6 +487,20 @@ t_hotfix_label_matches_what_is_made() {
     done_ok
 }
 
+t_nothing_written_to_the_real_home() {
+    # RUNS LAST, and it is the one scenario whose subject is the suite itself.
+    # It asserts the negative the other 55 cannot: that no scenario, anywhere,
+    # wrote outside the sandbox because it forgot to redirect HOME.
+    scenario "suite: no scenario wrote to the HOME it was not given" || return 0
+    local leaked
+    leaked="$(find "$UNTOUCHED_HOME" -mindepth 1 2>/dev/null | head -10)"
+    if [ -n "$leaked" ]; then
+        fail "something wrote to the real HOME: $(printf '%s' "$leaked" | tr '\n' ' ')"
+        return 0
+    fi
+    done_ok
+}
+
 t_config() {
     scenario "config: bases and release are read, a wrong entry warns and is skipped" || return 0
     local repo; repo="$(make_repo r6 main develop staging)"
@@ -1102,6 +1116,51 @@ BASH_UNDER_TEST="${BASH_UNDER_TEST:-bash}"
 # kept in logical form silently fails to match anything the tool reports.
 TMP="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/awt-test.XXXXXX")" && pwd -P)"
 FAKE_HOME="$TMP/home"; mkdir -p "$FAKE_HOME"
+
+# ==========================================================================
+# THE HOME NOBODY IS SUPPOSED TO REACH
+# ==========================================================================
+# Every scenario passes HOME="$FAKE_HOME" to the tool, because the tool writes
+# symlinks into ~/.claude/projects and a suite that writes into somebody's real
+# one is a suite people are right to stop running.
+#
+# "Every scenario" is the part worth checking rather than believing. A single
+# invocation that forgets the variable inherits the real HOME and writes there
+# for as long as nobody notices — and it would not fail a single assertion,
+# because the scenarios test WHAT the tool does, never WHERE.
+#
+# So the suite gives ITSELF a throwaway HOME too. Anything that overrides it
+# lands in FAKE_HOME as intended; anything that forgets lands here, in a
+# directory asserted to be empty at the end of the run.
+#
+# WHAT IT ACTUALLY CATCHES, measured by breaking each path on purpose rather than
+# assumed — because a guard nobody has seen go red is the thing it is guarding
+# against:
+#
+#   install.sh with HOME dropped   -> CAUGHT. This is the destructive one: it
+#                                     symlinks into ~/.local/bin and appends a
+#                                     line to the real ~/.zshrc.
+#   the tool with HOME dropped     -> NOT caught here, and cannot be. link_memory
+#                                     writes only when ~/.claude/projects/<key of
+#                                     the main repo> already exists, and in a
+#                                     throwaway home it never does — so a
+#                                     forgotten HOME produces a MISSING symlink,
+#                                     not a stray one. `t_memory_symlink` fails on
+#                                     exactly that, which is how it was confirmed.
+#
+# Both halves are covered; only one of them is covered from here. Anything added
+# later that writes under $HOME without that precondition — a cache, a log, a
+# state file — falls to this scenario, which is the case it exists for.
+#
+# Suggested by the brain-mcp session, which found exactly this in its own suite:
+# a hook with a hard-coded state directory had been writing real records into the
+# user's incident log for a year, and 37 of the 102 entries turned out to be one
+# line of a fixture. Their tests passed throughout, because they checked what the
+# hook detected and never where it wrote.
+UNTOUCHED_HOME="$TMP/home-nobody-should-write-to"
+mkdir -p "$UNTOUCHED_HOME"
+export HOME="$UNTOUCHED_HOME"
+
 trap 'rm -rf "$TMP"' EXIT
 
 printf '\n'
@@ -1167,6 +1226,7 @@ t_install_symlinks
 t_install_idempotent
 t_install_warns_about_pasted_copy
 t_install_reports_herdr_without_demanding_it
+t_nothing_written_to_the_real_home
 
 printf '\n'
 if [ "$FAIL" -eq 0 ]; then
