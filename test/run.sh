@@ -487,6 +487,68 @@ t_hotfix_label_matches_what_is_made() {
     done_ok
 }
 
+# --------------------------------------------------------------------------
+# NUMBERS THAT DESCRIBE THE INSTRUMENT AND READ AS THE WORLD
+# --------------------------------------------------------------------------
+# Both scenarios below come from brain-mcp #368, whose test is: does this number
+# measure the world, or the measuring? Applied to what this tool prints, it found
+# two — one silent, one green.
+t_where_says_unknown_not_zero() {
+    # `git rev-list` failing used to become "0 behind, 0 of your own" through a
+    # `|| echo 0`. Both lines print only when non-zero, so the failure came out
+    # as SILENCE — a session holding real work reported its name and nothing
+    # else, which reads as "in sync".
+    scenario "where: a base that does not resolve is unknown, not zero" || return 0
+    local repo; repo="$(make_repo_as w1 kamar-base main develop)"
+    local session; session="$(awt_run "$repo" new adrift develop 2>/dev/null)"
+
+    # Real work in the session, so "nothing to report" is provably wrong.
+    ( cd "$session" && echo change > file.txt && git add -A \
+        && git -c user.email=t@e.com -c user.name=T -c commit.gpgsign=false \
+           commit -qm "work" ) >/dev/null 2>&1
+
+    # The base disappears from origin, the way a release branch does after a
+    # release. Everything base_of can fall back on goes with it.
+    git -C "$repo" config --unset "branch.session/adrift.awtBase" 2>/dev/null
+    ( cd "$session" && git branch --unset-upstream ) 2>/dev/null
+    git -C "$repo" update-ref -d refs/remotes/origin/develop 2>/dev/null
+    git -C "$repo" update-ref -d refs/remotes/origin/main 2>/dev/null
+
+    local out
+    out="$( cd "$session" && AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" \
+        HERDR_PANE_ID="" "$BASH_UNDER_TEST" "$AWT_SH" where 2>&1 )"
+    assert_contains "$out" "UNKNOWN, not zero" "says it could not count" || return 0
+    assert_not_contains "$out" "commits of your own: 0" "and does not report a fabricated zero" || return 0
+    done_ok
+}
+
+t_verify_counts_linked_memory_out_of_total() {
+    # "sessions with linked memory: 0" was printed in green, and the run still
+    # ended with "All checks passed" — for the one failure this feature exists to
+    # prevent: an agent starting with an empty head.
+    scenario "verify: linked memory is reported N of M, and a shortfall is a problem" || return 0
+    local repo; repo="$(make_repo_as v1 kamar-base main develop)"
+    local key; key="$(printf '%s' "$repo" | tr '/_' '--')"
+    mkdir -p "$FAKE_HOME/.claude/projects/$key"
+
+    local a b
+    a="$(awt_run "$repo" new alpha develop 2>/dev/null)"
+    b="$(awt_run "$repo" new beta develop 2>/dev/null)"
+    # One session loses its link, exactly as it would if it were created before
+    # the main project had any memory at all.
+    local bkey; bkey="$(printf '%s' "$b" | tr '/_' '--')"
+    rm -f "$FAKE_HOME/.claude/projects/$bkey"
+
+    local out rc
+    out="$(awt_run "$repo" verify 2>&1)"; rc=$?
+    assert_contains "$out" "1 of 2" "reports the denominator, not just the count" || return 0
+    assert_contains "$out" "EMPTY memory" "says what the shortfall means" || return 0
+    assert_contains "$out" "$b" "and names the session that has it" || return 0
+    assert_eq 1 "$rc" "a shortfall is a problem, not a pass" || return 0
+    assert_not_contains "$out" "All checks passed" "and does not claim otherwise" || return 0
+    done_ok
+}
+
 t_no_early_exit_pipelines() {
     # THE PATTERN, NOT THE SYMPTOM — made executable.
     #
@@ -1259,6 +1321,8 @@ t_install_symlinks
 t_install_idempotent
 t_install_warns_about_pasted_copy
 t_install_reports_herdr_without_demanding_it
+t_where_says_unknown_not_zero
+t_verify_counts_linked_memory_out_of_total
 t_no_early_exit_pipelines
 t_nothing_written_to_the_real_home
 

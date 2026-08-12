@@ -23,6 +23,43 @@ not work because Y" is the most valuable thing here and the first thing lost.
 
 ---
 
+## 2026-08-12 — applying #368 to our own numbers, and finding two
+
+**Done.** brain-mcp synthesised the day's corrections into **#368**: in four
+incidents the number was computed correctly and what was false was **the default
+scope the reader supplied** — that the scan covered everything, that the counter
+had always run, that blocked meant lost. Its test is one question: *does this
+number measure the world, or the instrument?*
+
+Asked of every number this tool prints, it found two. 57 → 59 scenarios.
+
+- **`where` answered "0" when it meant "I could not count."** `rev-list` failing
+  became zero through a `|| echo 0`, and both lines print only when non-zero — so
+  the failure came out as **silence**. It now says so and stops.
+- **`verify` reported "sessions with linked memory: 3" with no denominator**, in
+  green. Three of three is working; three of nine is six agents starting with an
+  empty head, which is the failure the feature exists to prevent. It reports
+  `N of M`, names the sessions that are unlinked, and counts a shortfall as a
+  problem instead of ending with "All checks passed".
+
+**Proven.** Both scenarios fail against `df46937`. The `where` output there is the
+argument by itself: a session with a real commit in it prints
+`Session: kamar-adrift · branch: session/adrift · base: origin/` — note the empty
+base — **and nothing else**. Nothing else is what "you are in sync" looks like.
+
+**Found.** `clean` already made this distinction: *"skipping (cannot count commits
+against $base)"*, with a comment in `base_of` explaining that `|| echo 0` would
+make a session full of work look untouched and get it deleted. The trap was
+understood, written down, and guarded — **in one of the two callers.** A hazard
+that is documented where it was first met does not follow the function to its
+next caller; only a check that runs does. That is the same argument as the guard
+two entries down, arrived at from the opposite direction: there, a pattern was
+turned into a grep because a journal entry only describes its own occurrence.
+
+**Next.** Nothing new.
+
+---
+
 ## 2026-08-12 — the entry below overstates #130, and I am the one who amplified it
 
 **Done.** Nothing in the code. The entry below describes brain-mcp's **#130** as

@@ -1091,8 +1091,27 @@ cmd_where() {
     # A warning rather than a silent merge. Pulling mid-work can drop a conflict on
     # you at the worst possible moment, so the decision stays yours — this only
     # makes sure you know you are behind.
-    behind="$(git rev-list --count "HEAD..$base" 2>/dev/null || echo 0)"
-    own="$(git rev-list --count "$base..HEAD" 2>/dev/null || echo 0)"
+    # `|| echo 0` IS WHAT THIS USED TO SAY, AND IT ANSWERED THE WRONG QUESTION.
+    # When the base does not resolve — a release branch deleted on origin after a
+    # release, which is an ordinary Tuesday — `rev-list` fails and the fallback
+    # turned that into "0 behind, 0 of your own". Both lines are printed only
+    # when non-zero, so the failure came out as SILENCE: a session holding twelve
+    # commits of work reported its name, its branch, and nothing else. Silence
+    # here reads as "you are in sync".
+    #
+    # The number was never wrong; the question it answered was. Zero commits and
+    # no answer are different facts and must not print the same way. `clean`
+    # already made this distinction — "skipping (cannot count commits against
+    # $base)" — so the guard existed in one of the two callers of `base_of` and
+    # not the other.
+    if ! behind="$(git rev-list --count "HEAD..$base" 2>/dev/null)" \
+       || ! own="$(git rev-list --count "$base..HEAD" 2>/dev/null)"; then
+        warn "  cannot count against $base — it does not resolve."
+        warn "  How far ahead or behind you are is UNKNOWN, not zero."
+        warn "  Was the base branch deleted on origin? git fetch --prune, then look."
+        return 0
+    fi
+
     [[ "$own" != "0" ]] && info "  commits of your own: $own"
     if [[ "$behind" != "0" ]]; then
         warn "  you are $behind commits behind $base — check safely: agent-worktrees rehearse"
@@ -1129,7 +1148,13 @@ cmd_verify() {
     local key_main
     key_main="$(printf '%s' "$MAIN" | tr '/_' '--')"
     if [[ -d "$projects/$key_main" ]]; then
-        local linked=0
+        # N OUT OF M, BECAUSE N ALONE DESCRIBED THE SCAN AND READ AS THE WORLD.
+        # This printed "sessions with linked memory: 3" — in green, and with no
+        # denominator. Three of three is working; three of nine is six agents
+        # starting with an empty head, which is the failure this whole feature
+        # exists to prevent. Worse at the bottom of the range: "0" with four
+        # sessions present still ended with "All checks passed".
+        local linked=0 total=0 unlinked=""
         while IFS= read -r p; do
             [[ -n "$p" && "$p" != "$MAIN" ]] || continue
             # By provenance, like `clean`, and for the same reason: with a short
@@ -1137,10 +1162,27 @@ cmd_verify() {
             local br; br="$(git -C "$p" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
             [[ -n "$br" ]] || continue
             is_session_branch "$br" || continue
+            total=$((total + 1))
             local k; k="$(printf '%s' "$p" | tr '/_' '--')"
-            [[ -L "$projects/$k" ]] && linked=$((linked + 1))
+            if [[ -L "$projects/$k" ]]; then
+                linked=$((linked + 1))
+            else
+                unlinked="$unlinked     $p
+"
+            fi
         done < <(worktree_paths)
-        ok "   sessions with linked memory: $linked"
+
+        if [[ "$total" -eq 0 ]]; then
+            ok "   no sessions yet — nothing to link"
+        elif [[ "$linked" -eq "$total" ]]; then
+            ok "   sessions with linked memory: $linked of $total"
+        else
+            err "   sessions with linked memory: $linked of $total"
+            printf '%s\n' "     these start with an EMPTY memory — they cannot see the" >&2
+            printf '%s\n' "     project's notes or anything agreed in earlier sessions:" >&2
+            printf '%s' "$unlinked" >&2
+            problems=$((problems + 1))
+        fi
     else
         warn "   the main project has no memory directory yet — nothing to link"
     fi
