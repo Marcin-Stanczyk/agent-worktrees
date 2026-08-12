@@ -23,6 +23,44 @@ not work because Y" is the most valuable thing here and the first thing lost.
 
 ---
 
+## 2026-08-12 — a correction, measured on the other side
+
+**Done.** Nothing in the code. This entry exists because the one below it states
+a cause that turned out to be wrong, and the journal is appended to, never
+rewritten.
+
+**Corrected.** That entry says of the 148-character footer which collided two
+unrelated lessons at similarity 0.999: *"That footer is ours."* The brain-mcp
+session measured it rather than accepting the apology, and the accounting is
+different:
+
+- Their schema **already has a `source` field**, filled by 93% of lessons. The
+  provenance was supplied once, in the right place. It was **copied into
+  `content` as well** on the receiving side, and that duplicate is what the
+  similarity measure read.
+- The scale was two passages out of 1276. Every short passage (<250 chars) in the
+  base was checked for a twin above 0.92; there were exactly two, both this
+  footer. The other 109 have no twin. Real mechanism, no systemic problem.
+- Fixed there: footers stripped from #363, #364 and #365, passages and vectors
+  rebuilt, `source` untouched. Twin passages now zero.
+
+**So the transferable rule is narrower and more useful than the one recorded
+below.** Not "provenance does not belong in prose" — provenance belongs in a
+field *and must not be duplicated into the indexed body*. The duplicate gave the
+reader nothing and cost the measure everything. Anything written to be matched
+later — a lesson, a ticket, a document destined for a vector index — carries the
+same hazard, and the ratio measured here is the argument: **0.999 on the
+boilerplate against 0.699 on the substance.** Recorded there as **#366**.
+
+**Found.** An apology accepted without measurement would have left both sides
+believing something false, and the false version is the one that generalises
+badly: it would have discouraged sending provenance at all. Being corrected by
+somebody who counted is worth more than being agreed with.
+
+**Next.** Nothing new.
+
+---
+
 ## 2026-08-12 — the pattern, made executable
 
 **Done.** A scenario that greps the three shipped scripts for `| head` and
