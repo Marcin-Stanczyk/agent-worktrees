@@ -23,6 +23,32 @@ not work because Y" is the most valuable thing here and the first thing lost.
 
 ---
 
+## 2026-08-12 — the linter now runs inside the suite, and caught itself
+
+**Done.** A scenario runs shellcheck with exactly CI's flags, skipped rather than
+failed when it is not installed, and saying so out loud when the local version is
+not the 0.11.0 CI pins. 59 → 60 scenarios.
+
+**Why.** The pipeline went red on SC2034 in `test/run.sh` minutes after a green
+local run. No version gap this time — the linter simply was not run: the local
+check after editing a test was `bash -n` and the suite, and shellcheck lives in a
+separate command nobody has a reason to type after touching a test file. Twice in
+one day the gate deciding what reaches `main` was stricter than anything on this
+machine; once from a version gap, once from not being invoked. Resolving to
+remember it is the answer that already failed, so it moved into the command that
+does get run.
+
+**Proven, by itself, immediately.** The new scenario failed on the commit that
+introduced it — on its own comment. A line beginning `# shellcheck ...` is a
+**directive**, not a comment, so the paragraph explaining why the check skips when
+shellcheck is absent broke the parse of the whole file. Reworded, plus a sweep for
+any other comment line starting with that word. A guard whose first red is a
+defect in itself is the cheapest possible proof that it runs.
+
+**Next.** Nothing new.
+
+---
+
 ## 2026-08-12 — applying #368 to our own numbers, and finding two
 
 **Done.** brain-mcp synthesised the day's corrections into **#368**: in four

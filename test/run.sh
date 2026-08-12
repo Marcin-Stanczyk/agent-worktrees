@@ -531,8 +531,8 @@ t_verify_counts_linked_memory_out_of_total() {
     local key; key="$(printf '%s' "$repo" | tr '/_' '--')"
     mkdir -p "$FAKE_HOME/.claude/projects/$key"
 
-    local a b
-    a="$(awt_run "$repo" new alpha develop 2>/dev/null)"
+    local b
+    awt_run "$repo" new alpha develop >/dev/null 2>&1
     b="$(awt_run "$repo" new beta develop 2>/dev/null)"
     # One session loses its link, exactly as it would if it were created before
     # the main project had any memory at all.
@@ -546,6 +546,47 @@ t_verify_counts_linked_memory_out_of_total() {
     assert_contains "$out" "$b" "and names the session that has it" || return 0
     assert_eq 1 "$rc" "a shortfall is a problem, not a pass" || return 0
     assert_not_contains "$out" "All checks passed" "and does not claim otherwise" || return 0
+    done_ok
+}
+
+t_shellcheck_as_ci_runs_it() {
+    # THE COMMAND YOU FORGET IS THE ONE THAT IS NOT IN THE COMMAND YOU RUN.
+    # The pipeline went red on SC2034 in this very file, minutes after a green
+    # local run — because the local run was `bash -n` and the suite, while
+    # the linter lives in a separate command nobody had a reason to type after
+    # editing a test. Twice in one day the gate that decides what reaches main
+    # was stricter than anything on this machine; the first time it was a
+    # version gap, this time it was simply not run.
+    #
+    # So it runs here, exactly as CI runs it. Skipped rather than failed when
+    # the linter is absent: this tool refuses to depend on anything you have to
+    # install first, and a suite that breaks that promise gets run less.
+    scenario "gate: shellcheck passes, with the same flags CI uses" || return 0
+    if ! command -v shellcheck >/dev/null 2>&1; then
+        SKIP=$((SKIP + 1)); PASS=$((PASS - 0))
+        dim "    (shellcheck not installed — CI still runs it)"
+        return 0
+    fi
+
+    # CI pins 0.11.0. A different one here is not an error — it is the thing
+    # that made a red pipeline unreproducible for two pushes, so it is said out
+    # loud rather than discovered later.
+    local have
+    have="$(shellcheck --version | sed -n 's/^version: //p')"
+    [ "$have" = "0.11.0" ] || dim "    (local shellcheck $have, CI pins 0.11.0)"
+
+    local out
+    out="$(cd "$ROOT" && shellcheck -s bash -e SC2001,SC2016 \
+        agent-worktrees.sh install.sh test/run.sh 2>&1)"
+    if [ -n "$out" ]; then
+        fail "shellcheck (bash): $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160)"
+        return 0
+    fi
+    out="$(cd "$ROOT" && shellcheck -s sh -e SC3043 awt.sh 2>&1)"
+    if [ -n "$out" ]; then
+        fail "shellcheck (sh, awt.sh): $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-160)"
+        return 0
+    fi
     done_ok
 }
 
@@ -1323,6 +1364,7 @@ t_install_warns_about_pasted_copy
 t_install_reports_herdr_without_demanding_it
 t_where_says_unknown_not_zero
 t_verify_counts_linked_memory_out_of_total
+t_shellcheck_as_ci_runs_it
 t_no_early_exit_pipelines
 t_nothing_written_to_the_real_home
 
