@@ -493,6 +493,56 @@ t_hotfix_label_matches_what_is_made() {
 # Both scenarios below come from brain-mcp #368, whose test is: does this number
 # measure the world, or the measuring? Applied to what this tool prints, it found
 # two — one silent, one green.
+# A session whose base branch no longer exists on origin — a release branch
+# tidied up after a release, which is an ordinary Tuesday. Everything `base_of`
+# can fall back on goes with it.
+strand_session() { # repo session branch
+    local repo="$1" session="$2" branch="$3"
+    git -C "$repo" config --unset "branch.$branch.awtBase" 2>/dev/null
+    ( cd "$session" && git branch --unset-upstream ) 2>/dev/null
+    git -C "$repo" update-ref -d refs/remotes/origin/develop 2>/dev/null
+    git -C "$repo" update-ref -d refs/remotes/origin/main 2>/dev/null
+    return 0
+}
+
+t_rehearse_says_unknown_not_up_to_date() {
+    # The loudest of the three: `where` fell silent, this one printed "up to
+    # date — nothing to pull", in green, from the command whose only job is
+    # answering "can I safely pull?".
+    scenario "rehearse: an unresolvable base is refused, not called up to date" || return 0
+    local repo; repo="$(make_repo_as r20 kamar-base main develop)"
+    local session; session="$(awt_run "$repo" new stranded develop 2>/dev/null)"
+    strand_session "$repo" "$session" "session/stranded"
+
+    local out rc
+    out="$( cd "$session" && AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" \
+        HERDR_PANE_ID="" "$BASH_UNDER_TEST" "$AWT_SH" rehearse 2>&1 )"; rc=$?
+    # The assertion targets the green sentence that was the actual lie. Checking
+    # for the absence of "nothing to pull" fails against the FIX, because the new
+    # error message quotes that phrase to explain what it is not saying — the
+    # first version of this test did exactly that and went red on correct code.
+    assert_not_contains "$out" "up to date with" "did not answer a question it cannot answer" || return 0
+    assert_contains "$out" "UNKNOWN, not" "said so instead" || return 0
+    assert_eq 1 "$rc" "and failed rather than reassured" || return 0
+    done_ok
+}
+
+t_verify_checks_every_session_base() {
+    # The path-independent one: it holds however the session was made, and for
+    # commands that do not exist yet.
+    scenario "verify: a session whose base stopped resolving is reported as a problem" || return 0
+    local repo; repo="$(make_repo_as v20 kamar-base main develop)"
+    local session; session="$(awt_run "$repo" new orphan develop 2>/dev/null)"
+    strand_session "$repo" "$session" "session/orphan"
+
+    local out rc
+    out="$(awt_run "$repo" verify 2>&1)"; rc=$?
+    assert_contains "$out" "sessions whose base still resolves: 0 of 1" "counts N of M" || return 0
+    assert_contains "$out" "kamar-orphan" "names the session" || return 0
+    assert_eq 1 "$rc" "and it is a problem" || return 0
+    done_ok
+}
+
 t_where_says_unknown_not_zero() {
     # `git rev-list` failing used to become "0 behind, 0 of your own" through a
     # `|| echo 0`. Both lines print only when non-zero, so the failure came out
@@ -1363,6 +1413,8 @@ t_install_idempotent
 t_install_warns_about_pasted_copy
 t_install_reports_herdr_without_demanding_it
 t_where_says_unknown_not_zero
+t_rehearse_says_unknown_not_up_to_date
+t_verify_checks_every_session_base
 t_verify_counts_linked_memory_out_of_total
 t_shellcheck_as_ci_runs_it
 t_no_early_exit_pipelines

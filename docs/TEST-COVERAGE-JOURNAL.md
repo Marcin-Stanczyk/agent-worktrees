@@ -23,6 +23,44 @@ not work because Y" is the most valuable thing here and the first thing lost.
 
 ---
 
+## 2026-08-12 — the third caller, which I did not look at
+
+**Done.** `rehearse` had the same `|| echo 0` as `where`, and `verify` gained a
+check that does not care which command you were about to run. 60 → 62 scenarios.
+
+**The finding, and it is about me rather than the code.** `base_of` has three
+callers. `clean` guarded the failure. `where` did not, and I fixed it an hour
+earlier — writing in the entry two below that *"a hazard documented where it was
+first met does not follow the function to its next caller."* Then I pushed
+without looking at the third caller.
+
+`rehearse` is also the worst of the three. `where` fell silent; `rehearse`
+printed, in green, **"up to date with origin/ — nothing to pull"** — from the
+command whose entire purpose is answering "can I safely pull?". Silence can be
+misread; this was an answer, and it was wrong, and it was reassuring.
+
+**Done properly this time, at brain-mcp's suggestion.** They fixed their
+equivalent at three levels and named the middle one as the part that actually
+travels: a check in `doctor` that works *regardless of which path created the
+problem, including paths that do not exist yet*. So `verify` now checks that every
+session's base still resolves — by state, not by call site. However the session
+was made, whatever command is added later, that check holds.
+
+**Proven.** Both scenarios fail against `912e05b`: `[up to date with] should NOT
+be there`, and the missing `0 of 1`.
+
+**Found, twice, in the tests themselves.** The first `rehearse` scenario went red
+against **correct** code: it asserted the absence of "nothing to pull", and the
+new error message quotes that phrase to explain what it is not saying. The
+assertion now targets the green sentence that was the actual lie. Second time
+today a check has caught a defect in itself — the shellcheck scenario broke on
+its own comment two entries up. Both were cheap. Neither was free, and both were
+found only by watching the thing fail rather than by watching it pass.
+
+**Next.** Nothing new.
+
+---
+
 ## 2026-08-12 — the linter now runs inside the suite, and caught itself
 
 **Done.** A scenario runs shellcheck with exactly CI's flags, skipped rather than

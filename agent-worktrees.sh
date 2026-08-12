@@ -919,8 +919,24 @@ cmd_rehearse() {
 
     info "Rehearsing a merge of $base into $branch — nothing will be changed."
 
+    # THE THIRD CALLER OF `base_of`, AND THE ONE WHERE THIS LIES OUT LOUD.
+    # `clean` guarded it. `where` did not, and answered with silence, which was
+    # fixed an hour before this line was read for the first time. Here the same
+    # `|| echo 0` did not fall silent — it printed, in green, "up to date with
+    # origin/ — nothing to pull", from the command whose ONLY job is answering
+    # "can I safely pull?". An unanswerable question came out as a reassuring
+    # answer.
+    #
+    # Fixing the second caller and not looking at the third is the exact failure
+    # this repository had just finished writing down: a hazard understood in one
+    # place does not travel to the next call site by being understood.
     local behind
-    behind="$(git rev-list --count "HEAD..$base" 2>/dev/null || echo 0)"
+    if ! behind="$(git rev-list --count "HEAD..$base" 2>/dev/null)"; then
+        err "  cannot rehearse — $base does not resolve."
+        printf '%s\n' "  Whether pulling would conflict is UNKNOWN, not 'nothing to pull'." >&2
+        printf '%s\n' "  Was the base branch deleted on origin? git fetch --prune, then look." >&2
+        exit 1
+    fi
     if [[ "$behind" == "0" ]]; then
         ok "  up to date with $base — nothing to pull"
         return 0
@@ -1187,7 +1203,51 @@ cmd_verify() {
         warn "   the main project has no memory directory yet — nothing to link"
     fi
 
-    info "4. Herdr"
+    # ---------------------------------------------------------------------
+    # 4. EVERY SESSION'S BASE STILL RESOLVES
+    # ---------------------------------------------------------------------
+    # Fixing `where` and `rehearse` fixes the two commands that ask. This asks
+    # about the STATE, so it holds for however the session was made — by `new`,
+    # by the survey, by herdr, by hand — and for commands that do not exist yet.
+    # Suggested by the brain-mcp session, whose equivalent check in their
+    # `doctor` is, in their words, the part that actually travels: it works
+    # independently of which path created the problem.
+    #
+    # A base that has stopped resolving is not cosmetic. `where` and `rehearse`
+    # can no longer answer, and `clean` cannot count commits, so it refuses to
+    # remove the session — safe, but the directory accumulates with no
+    # explanation offered anywhere.
+    info "4. Session bases"
+    local bases_ok=0 bases_total=0 broken=""
+    while IFS= read -r p; do
+        [[ -n "$p" && "$p" != "$MAIN" ]] || continue
+        local sbr; sbr="$(git -C "$p" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+        [[ -n "$sbr" ]] || continue
+        is_session_branch "$sbr" || continue
+        bases_total=$((bases_total + 1))
+        local sbase; sbase="$(base_of "$sbr")"
+        if git -C "$MAIN" rev-parse --verify --quiet "$sbase" >/dev/null 2>&1; then
+            bases_ok=$((bases_ok + 1))
+        else
+            broken="$broken     $(basename "$p")  (base: ${sbase:-<none>})
+"
+        fi
+    done < <(worktree_paths)
+
+    if [[ "$bases_total" -eq 0 ]]; then
+        ok "   no sessions yet — nothing to check"
+    elif [[ "$bases_ok" -eq "$bases_total" ]]; then
+        ok "   sessions whose base still resolves: $bases_ok of $bases_total"
+    else
+        err "   sessions whose base still resolves: $bases_ok of $bases_total"
+        printf '%s\n' "     'where' and 'rehearse' cannot answer for these, and 'clean'" >&2
+        printf '%s\n' "     will not remove them because it cannot count their commits:" >&2
+        printf '%s' "$broken" >&2
+        printf '%s\n' "     Try: git fetch --prune, then check whether the base was deleted." >&2
+        problems=$((problems + 1))
+    fi
+
+    info "5. Herdr"
     if have_herdr; then
         ok "   available ($(first_line "$(herdr --version 2>/dev/null || true)"))"
 
