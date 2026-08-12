@@ -54,10 +54,34 @@ jobs:
           curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/$SC_VERSION/$SC_ASSET" | tar -xJ
           SC="$PWD/shellcheck-$SC_VERSION/shellcheck"
           "$SC" --version
+
+          # THE EXCLUSION LIST, AND WHEN IT WAS LAST LOOKED AT.
+          # Three checks are suppressed. A suppression list is a gate's blind
+          # spot, and its failure mode is silence: the only symptom of one that
+          # has outlived its reason is the absence of a warning nobody misses.
+          # Counting the entries proves nothing — what matters is whether
+          # anything has ever LEFT the list, and when each entry was last
+          # justified. So each one says what it covers, where it currently
+          # fires, and the date somebody checked:
+          #
+          #   SC2001  audited 2026-08-12 — fires at agent-worktrees.sh:980 and
+          #           :1173, both `echo "$x" | sed 's/^/  /'` indenting a
+          #           multi-line string. The suggested ${v//a/b} form does not
+          #           indent the first line without extra work; the sed is
+          #           clearer. KEPT.
+          #   SC2016  audited 2026-08-12 — fires at install.sh:34 and
+          #           test/run.sh:1110,:1122, all of them strings that are
+          #           MEANT to stay literal: the PATH line install.sh prints for
+          #           you to paste, and the rc line the suite writes. Expanding
+          #           them would be the bug. KEPT.
+          #   SC3043  audited 2026-08-12 — fires at awt.sh:41. `local` is the one
+          #           non-POSIX construct used, on purpose: bash, zsh, dash and
+          #           ksh all have it, and the alternative is leaking four
+          #           variables into somebody's interactive shell on every
+          #           session. KEPT.
+          #
+          # Re-check when adding to this list, and never add without a line here.
           "$SC" -s bash -e SC2001,SC2016 agent-worktrees.sh install.sh test/run.sh
-          # -e SC3043: `local` is the one non-POSIX construct used, on purpose —
-          # bash, zsh, dash and ksh all have it, and the alternative is leaking
-          # variables into the user's interactive shell.
           "$SC" -s sh -e SC3043 awt.sh
           bash -n awt.sh
           zsh  -n awt.sh

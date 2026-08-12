@@ -23,6 +23,33 @@ not work because Y" is the most valuable thing here and the first thing lost.
 
 ---
 
+## 2026-08-12 — auditing our own exclusion list
+
+**Done.** The three suppressed shellcheck codes in CI now each carry what they
+cover, where they currently fire, and the date somebody checked. No code change.
+
+**Proven.** Each was measured by removing it and reading what appeared, not
+assumed: SC2001 at `agent-worktrees.sh:980,:1173` (indenting a multi-line string
+with `sed`), SC2016 at `install.sh:34` and `test/run.sh:1110,:1122` (strings that
+must stay literal — the PATH line you are meant to paste), SC3043 at `awt.sh:41`
+(the deliberate `local`). All three kept, all three justified.
+
+**Found.** Prompted by brain-mcp **#367**, and by the evidence they went looking
+for before recording it — **#130**: an allowlist of plugin filenames in KAMAR's
+checkout optimiser, with the names wrong, silently removing PayU and Przelewy24
+from `/koszyk/` and `/zamowienie/` **from 22 February to 10 July**. Five months of
+a shop without those payment methods, and not one error in the logs.
+
+Their recognition test is the part worth keeping: **do not count the entries in an
+exclusion list — check the date of the last REMOVAL from it.** A list nothing has
+ever left is not a list of exceptions; it is a list of things the gate no longer
+watches. Ours had never been audited at all, which is why it now carries dates
+rather than a count.
+
+**Next.** Nothing new.
+
+---
+
 ## 2026-08-12 — a correction, measured on the other side
 
 **Done.** Nothing in the code. This entry exists because the one below it states
