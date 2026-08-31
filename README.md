@@ -70,6 +70,7 @@ by accident. Session memory is symlinked to the main repository's.
 ```
 awt                      survey: base, name, agent
 awt new <name> [base]    no questions asked
+awt resume [name]        continue in an existing worktree, or pick one
 awt list                 every working directory and who is in it
 awt where                where you are, off what, how far behind
 awt rehearse             would pulling the base conflict? (changes nothing)
@@ -78,8 +79,8 @@ awt verify               check that the isolation actually works
 awt help                 the above
 ```
 
-**Both `awt` and `awt new` leave you standing in the session with the agent
-running.** The survey asks for a base, a name and an agent. `new` is handed the
+**`awt`, `awt new` and `awt resume` all leave you standing in the session with
+the agent running.** The survey asks for a base, a name and an agent. `new` is handed the
 name and takes the agent from `.agent-worktrees.conf` (or `claude`) — but it
 **asks which branch to cut from**, because being given a name is not being told
 what to branch off, and guessing is how a hotfix ends up carrying a development
@@ -151,6 +152,38 @@ Repositories directly below here:
   cd kamar-base
   cd kamar-checkout
 ```
+
+### `resume` — going back into a session you already started
+
+`new <existing-name>` has always re-entered a worktree that is already there
+rather than recreating it — but that only helps if you remember the exact
+name. `resume` is the entry point for when you do not:
+
+```
+$ awt resume
+
+Continue in which session?
+   1) kamar-finanse  —  clean, 2 ahead / 0 behind origin/develop
+   2) kamar-urgent   —  uncommitted changes, 0 ahead / 1 behind origin/develop
+   choice [1]: 2
+
+Which agent should start?
+   1) claude
+   2) plain shell
+   choice [1]:
+```
+
+With a name it behaves exactly like `new <name>`, minus the base question —
+there is nothing left to create, so there is nothing to ask: `awt resume
+finanse`. Run without the shell function, it prints the session path on stdout
+and nothing else, the same contract `new` already keeps.
+
+The menu is not limited to sessions this tool made — resuming only changes
+directory, so `clean`'s ownership guard has nothing here to protect against.
+It **is** limited by whether another shell already has the worktree open: that
+gets flagged before the confirmation, because starting a second agent in a
+directory that already has one is the exact failure this tool exists to
+prevent.
 
 ### `rehearse` — the one worth knowing about
 
