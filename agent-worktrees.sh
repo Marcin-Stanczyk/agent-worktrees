@@ -31,7 +31,7 @@
 #   agent-worktrees list                # what is taken and by whom
 #   agent-worktrees where               # where am I, off what, how far behind
 #   agent-worktrees rehearse            # would pulling the base conflict?
-#   agent-worktrees clean               # remove untouched session worktrees
+#   agent-worktrees clean [-i]          # remove untouched session worktrees
 #   agent-worktrees verify              # is the isolation actually working?
 #
 # Shell integration and installation: see README.md
@@ -1104,7 +1104,21 @@ herdr_forget() {
     herdr workspace close "$id" >/dev/null 2>&1 && info "    herdr: closed workspace $id"
 }
 
-cmd_clean() {
+# THE ACTUAL REMOVAL, ONE PLACE. Both the automatic and interactive paths do
+# exactly this once a worktree is decided on, so there is exactly one place
+# that can forget to forget the herdr workspace or leave the branch behind.
+remove_worktree_and_branch() { # path branch
+    local path="$1" branch="$2"
+    git -C "$MAIN" worktree remove "$path" --force >/dev/null 2>&1 || true
+    herdr_forget "$path"
+    # `-d`, not `-D`: a branch with unmerged commits survives. The automatic
+    # path only ever reaches here with zero commits of its own; interactive
+    # mode reaches it with a human's explicit "yes, I know" instead — either
+    # way I would rather git had the last word than my caller's condition.
+    git -C "$MAIN" branch -d "$branch" >/dev/null 2>&1 || true
+}
+
+cmd_clean_auto() {
     info "Looking for worktrees with no changes and no commits of their own…"
     local removed=0
 
@@ -1155,18 +1169,117 @@ cmd_clean() {
             continue
         fi
 
-        git -C "$MAIN" worktree remove "$path" --force >/dev/null 2>&1 || true
-        herdr_forget "$path"
-        # `-d`, not `-D`: a branch with unmerged commits survives. Only branches
-        # without their own commits reach this point, but I would rather git had
-        # the last word than my condition above.
-        git -C "$MAIN" branch -d "$branch" >/dev/null 2>&1 || true
+        remove_worktree_and_branch "$path" "$branch"
         ok "  removed: $path"
         removed=$((removed + 1))
     done < <(worktree_paths)
 
     git -C "$MAIN" worktree prune
     ok "Done — removed $removed."
+}
+
+# ---------------------------------------------------------------------------
+# `clean -i` — THE SAME SAFETY, A HUMAN DECIDES THE REST
+# ---------------------------------------------------------------------------
+# Automatic `clean` only ever touches a worktree with zero changes and zero
+# commits of its own — see "clean is deliberately timid" in the README. That
+# is the right default, but it leaves no path for "yes, I know this one has
+# commits, I already got what I needed from it, remove it" short of `git
+# worktree remove` by hand, off camera from this tool entirely.
+#
+# Interactive mode relaxes exactly that one restriction. It does NOT relax
+# which worktrees are even offered: `MAIN`, the one you are standing in, and
+# anything this tool did not make are excluded here exactly as they are in
+# the automatic path, for the same reasons.
+cmd_clean_interactive() {
+    if ! should_ask; then
+        err "Interactive cleanup needs a terminal to ask in."
+        printf '%s\n' "  agent-worktrees clean" >&2
+        exit 1
+    fi
+
+    local busy; busy="$(busy_worktree_paths)"
+    local paths=() branches=() offer=() reason=() p
+    while IFS= read -r p; do
+        local branch; branch="$(git -C "$p" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+        [[ -n "$branch" ]] || continue
+        paths+=("$p")
+        branches+=("$branch")
+        if [[ "$p" == "$PWD" || "$PWD" == "$p"/* ]]; then
+            offer+=("0"); reason+=(" — you are standing in it")
+        elif ! is_session_branch "$branch"; then
+            # No reason repeated here: `worktree_status_line` already says "not
+            # a session this tool made" for exactly this case, right there in
+            # the same line.
+            offer+=("0"); reason+=("")
+        else
+            offer+=("1"); reason+=("")
+        fi
+    done < <(resumable_worktree_paths)
+
+    if [ "${#paths[@]}" -eq 0 ]; then
+        info "No worktrees besides the main one — nothing to look at."
+        return 0
+    fi
+
+    info "Every worktree but the main one:"
+    local i line
+    for i in "${!paths[@]}"; do
+        line="$(basename "${paths[$i]}")  —  $(worktree_status_line "${paths[$i]}" "$busy")"
+        if [[ "${offer[$i]}" == "0" ]]; then
+            printf '  %s  (not offered%s)\n' "$line" "${reason[$i]}" >&2
+        else
+            printf '  %s\n' "$line" >&2
+        fi
+    done
+    echo >&2
+
+    info "Going through the rest one at a time — Enter or n skips, y removes, q stops:"
+    local removed=0 kept=0
+    for i in "${!paths[@]}"; do
+        [[ "${offer[$i]}" == "1" ]] || continue
+        local path="${paths[$i]}" branch="${branches[$i]}"
+        printf '\n  %s\n' "$(basename "$path")  —  $(worktree_status_line "$path" "$busy")" >&2
+        printf '  Remove it? [y/N/q]: ' >&2
+        local answer
+        if ! answer="$(read_line)"; then
+            warn "  no more input — stopping, nothing further was asked about."
+            break
+        fi
+        case "$answer" in
+            y|Y)
+                remove_worktree_and_branch "$path" "$branch"
+                ok "  removed: $path"
+                removed=$((removed + 1))
+                ;;
+            q|Q)
+                warn "  stopped — nothing further was asked about."
+                break
+                ;;
+            *)
+                info "  kept: $path"
+                kept=$((kept + 1))
+                ;;
+        esac
+    done
+
+    git -C "$MAIN" worktree prune
+    ok "Done — removed $removed, kept $kept."
+}
+
+cmd_clean() {
+    case "${1:-}" in
+        -i|--interactive) cmd_clean_interactive ;;
+        "")               cmd_clean_auto ;;
+        *)
+            err "No such option for clean: $1"
+            {
+                printf '%s\n' "  agent-worktrees clean       remove worktrees with no changes and no commits"
+                printf '%s\n' "  agent-worktrees clean -i    review each one yourself, step by step"
+            } >&2
+            exit 2
+            ;;
+    esac
 }
 
 cmd_where() {
@@ -1530,7 +1643,8 @@ agent-worktrees — one agent, one working directory
   agent-worktrees list                every working directory and who is in it
   agent-worktrees where               where you are, off what, how far behind
   agent-worktrees rehearse            would pulling the base conflict? (changes nothing)
-  agent-worktrees clean               remove worktrees with no changes and no commits
+  agent-worktrees clean [-i]          remove worktrees with no changes and no commits
+                                      (-i: review each one yourself, step by step)
   agent-worktrees verify              check that the isolation actually works
   agent-worktrees help                this text
 
@@ -1587,7 +1701,7 @@ case "${1:-start}" in
     rehearse)       cmd_rehearse ;;
     verify)         cmd_verify ;;
     list)           cmd_list ;;
-    clean)          cmd_clean ;;
+    clean)          shift; cmd_clean "$@" ;;
     where)          cmd_where ;;
     help|-h|--help) usage ;;   # asked for, so: stdout, exit 0
     *)              unknown_command "$1" ;;
