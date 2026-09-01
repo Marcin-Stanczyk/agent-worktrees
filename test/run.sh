@@ -1015,6 +1015,111 @@ t_clean() {
     done_ok
 }
 
+# --------------------------------------------------------------------------
+# `clean -i` — the same safety, a human decides the rest
+# --------------------------------------------------------------------------
+
+t_clean_interactive_needs_terminal() {
+    scenario "clean -i: refuses without a terminal instead of guessing" || return 0
+    local repo; repo="$(make_repo ci1 main develop)"
+    awt_run "$repo" new empty develop >/dev/null 2>&1
+    local rc
+    ( cd "$repo" && with_timeout env AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" \
+        HERDR_PANE_ID="" "$BASH_UNDER_TEST" "$AWT_SH" clean -i \
+        </dev/null >/dev/null 2>"$TMP/e" ); rc=$?
+    assert_eq 1 "$rc" "exit code" || return 0
+    assert_contains "$(cat "$TMP/e")" "needs a terminal" "says why" || return 0
+    done_ok
+}
+
+t_clean_interactive_walks_each_one() {
+    scenario "clean -i: y removes, n keeps, one decision per worktree" || return 0
+    local repo; repo="$(make_repo ci2 main develop)"
+    local a b
+    a="$(awt_run "$repo" new alpha develop 2>/dev/null)"
+    b="$(awt_run "$repo" new bravo develop 2>/dev/null)"
+
+    local out
+    out="$( cd "$repo" && printf 'y\nn\n' | AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" \
+        HERDR_PANE_ID="" AWT_ASK=1 "$BASH_UNDER_TEST" "$AWT_SH" clean -i 2>&1 )"
+    # WHICH of the two gets removed depends on the order `git worktree list`
+    # happens to return, which is not this test's to assume — only that
+    # exactly one decision landed each way.
+    local remaining=0
+    [ -d "$a" ] && remaining=$((remaining + 1))
+    [ -d "$b" ] && remaining=$((remaining + 1))
+    assert_eq 1 "$remaining" "exactly one of the two survives" || return 0
+    assert_contains "$out" "removed 1, kept 1" "and the summary agrees" || return 0
+    done_ok
+}
+
+t_clean_interactive_can_remove_work_with_consent() {
+    # THE WHOLE POINT of the interactive path: automatic `clean` would never
+    # touch this one — it has a commit of its own — but a human who has been
+    # shown that and asked anyway can say yes.
+    scenario "clean -i: a worktree with commits of its own can be removed with consent" || return 0
+    local repo; repo="$(make_repo ci3 main develop)"
+    local committed; committed="$(awt_run "$repo" new committed develop 2>/dev/null)"
+    (
+        cd "$committed" && git config user.email t@example.com && git config user.name Test \
+            && git config commit.gpgsign false \
+            && echo work > work.txt && git add work.txt && git commit -qm "real work"
+    )
+
+    local out
+    out="$( cd "$repo" && printf 'y\n' | AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" \
+        HERDR_PANE_ID="" AWT_ASK=1 "$BASH_UNDER_TEST" "$AWT_SH" clean -i 2>&1 )"
+    assert_no_dir "$committed" "removed despite having commits, because a human said yes" || return 0
+    assert_contains "$out" "1 ahead" "the status line said so before asking" || return 0
+    done_ok
+}
+
+t_clean_interactive_excludes_pwd_and_unowned() {
+    scenario "clean -i: the one you are in, and worktrees this tool did not make, are never offered" || return 0
+    local repo; repo="$(make_repo ci4 main develop)"
+    local here; here="$(awt_run "$repo" new here develop 2>/dev/null)"
+    git -C "$repo" worktree add -q -b manual-topic "$TMP/ci4-manual" develop
+
+    local out
+    out="$( cd "$here" && with_timeout env AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" \
+        HERDR_PANE_ID="" AWT_ASK=1 "$BASH_UNDER_TEST" "$AWT_SH" clean -i \
+        </dev/null 2>&1 )"
+    assert_contains "$out" "you are standing in it" "says why the current one is excluded" || return 0
+    assert_contains "$out" "not a session this tool made" "says why the manual one is excluded" || return 0
+    assert_not_contains "$out" "Remove it?" "nothing was offered to decide on" || return 0
+    assert_dir "$here" "never touched" || return 0
+    assert_dir "$TMP/ci4-manual" "never touched either" || return 0
+    done_ok
+}
+
+t_clean_interactive_stops_on_q() {
+    scenario "clean -i: 'q' stops asking and leaves the rest untouched" || return 0
+    local repo; repo="$(make_repo ci5 main develop)"
+    local one two
+    one="$(awt_run "$repo" new one develop 2>/dev/null)"
+    two="$(awt_run "$repo" new two develop 2>/dev/null)"
+
+    local out
+    out="$( cd "$repo" && printf 'q\n' | AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" \
+        HERDR_PANE_ID="" AWT_ASK=1 "$BASH_UNDER_TEST" "$AWT_SH" clean -i 2>&1 )"
+    assert_dir "$one" "kept — q stopped before either was decided" || return 0
+    assert_dir "$two" "kept — q stopped before either was decided" || return 0
+    assert_contains "$out" "removed 0, kept 0" "nothing was decided either way" || return 0
+    done_ok
+}
+
+t_clean_bad_flag() {
+    scenario "clean: an unrecognised flag is refused with both real options" || return 0
+    local repo; repo="$(make_repo ci6 main develop)"
+    local err rc
+    awt_run "$repo" clean --bogus >/dev/null 2>"$TMP/e"; rc=$?
+    err="$(cat "$TMP/e")"
+    assert_eq 2 "$rc" "exit code" || return 0
+    assert_contains "$err" "No such option for clean: --bogus" "says so" || return 0
+    assert_contains "$err" "agent-worktrees clean -i" "and shows the interactive form" || return 0
+    done_ok
+}
+
 t_read_only_commands() {
     scenario "list / where / rehearse / verify all succeed and change nothing" || return 0
     local repo; repo="$(make_repo r9 main develop)"
@@ -1517,6 +1622,12 @@ t_wrapper_resume
 t_wrapper_passthrough
 t_wrapper_failure
 t_clean
+t_clean_interactive_needs_terminal
+t_clean_interactive_walks_each_one
+t_clean_interactive_can_remove_work_with_consent
+t_clean_interactive_excludes_pwd_and_unowned
+t_clean_interactive_stops_on_q
+t_clean_bad_flag
 t_read_only_commands
 t_same_branch_lock
 t_memory_symlink

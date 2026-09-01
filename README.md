@@ -74,7 +74,7 @@ awt resume [name]        continue in an existing worktree, or pick one
 awt list                 every working directory and who is in it
 awt where                where you are, off what, how far behind
 awt rehearse             would pulling the base conflict? (changes nothing)
-awt clean                remove worktrees with no changes and no commits
+awt clean [-i]           remove worktrees with no changes and no commits
 awt verify               check that the isolation actually works
 awt help                 the above
 ```
@@ -201,14 +201,45 @@ halfway through, complaining about overwriting local changes.
 
 ### `clean` is deliberately timid
 
-It touches **only** directories carrying the session prefix, and only those with
-neither changes nor commits of their own. If it cannot count commits for any
-reason, the directory stays.
+It touches **only** worktrees whose branch this tool actually created, and
+only those with neither changes nor commits of their own. If it cannot count
+commits for any reason, the directory stays.
 
 The cost is asymmetric: a worktree left behind is some disk space, a worktree
 deleted is somebody's work. An earlier version walked every worktree in the
 repository and removed branches that were none of its business. That is why the
 condition is this narrow.
+
+### `clean -i` — when the answer is "yes, I know, remove it anyway"
+
+Automatic `clean` will never touch a worktree with commits or changes of its
+own — that is the point of it being timid. `-i` (or `--interactive`) is the
+other half: it shows every worktree but the main one, with the same status
+line `resume` uses, marks the ones automatic `clean` would never touch anyway
+(the one you are standing in, anything this tool did not make) as not offered,
+and then goes through what is left **one at a time**:
+
+```
+$ awt clean -i
+
+Every worktree but the main one:
+  kamar-finanse    —  clean, 2 ahead / 0 behind origin/develop
+  kamar-checkout   —  clean, not a session this tool made  (not offered)
+
+Going through the rest one at a time — Enter or n skips, y removes, q stops:
+
+  kamar-finanse  —  clean, 2 ahead / 0 behind origin/develop
+  Remove it? [y/N/q]:
+```
+
+The default answer is always "skip" — Enter, `n`, or the input running out all
+keep it — for the same asymmetric-cost reason automatic `clean` is timid in
+the first place. `y` removes that one worktree right there, the same removal
+automatic `clean` uses. `q` stops asking and leaves everything not yet decided
+exactly where it was. What interactive mode relaxes is the automatic path's
+"no changes, no commits" rule, since a human who has been shown the status and
+asked anyway is the whole reason to have an interactive mode at all — it does
+**not** relax which worktrees are offered in the first place.
 
 ## Configuration
 
