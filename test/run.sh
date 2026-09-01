@@ -346,6 +346,106 @@ t_new_stale_wrapper_refused() {
     done_ok
 }
 
+# --------------------------------------------------------------------------
+# `resume` — going back into a session that already exists
+# --------------------------------------------------------------------------
+
+t_resume_by_name() {
+    scenario "resume: a name replies with directory and agent, like new" || return 0
+    local repo; repo="$(make_repo res1 main develop)"
+    mkdir -p "$TMP/bin"
+    printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/claude"; chmod +x "$TMP/bin/claude"
+    awt_run "$repo" new resumeme develop >/dev/null 2>&1
+
+    local out
+    out="$( cd "$repo" && AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" HERDR_PANE_ID="" \
+        AWT_WRAPPER=2 PATH="$TMP/bin:$PATH" \
+        "$BASH_UNDER_TEST" "$AWT_SH" resume resumeme 2>/dev/null )"
+    assert_eq 2 "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "two lines: dir, agent" || return 0
+    assert_dir "$(printf '%s\n' "$out" | sed -n 1p)" "line 1 is the session directory" || return 0
+    assert_eq "claude" "$(printf '%s\n' "$out" | sed -n 2p)" "line 2 is the agent" || return 0
+    done_ok
+}
+
+t_resume_without_wrapper() {
+    scenario "resume: run without the wrapper, stdout is still the path and nothing else" || return 0
+    local repo; repo="$(make_repo res2 main develop)"
+    awt_run "$repo" new later develop >/dev/null 2>&1
+    local out
+    out="$(awt_run "$repo" resume later 2>/dev/null)"
+    assert_eq 1 "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "one line only" || return 0
+    assert_dir "$out" "and it is the session directory" || return 0
+    done_ok
+}
+
+t_resume_unknown_name() {
+    scenario "resume: a name that does not exist is refused, and existing ones are listed" || return 0
+    local repo; repo="$(make_repo res3 main develop)"
+    awt_run "$repo" new known develop >/dev/null 2>&1
+    local err rc
+    awt_run "$repo" resume ghost >/dev/null 2>"$TMP/e"; rc=$?
+    err="$(cat "$TMP/e")"
+    assert_eq 1 "$rc" "exit code" || return 0
+    assert_contains "$err" "No such session: ghost" "says so" || return 0
+    assert_contains "$err" "work-known" "and lists the one that does exist" || return 0
+    assert_contains "$err" "agent-worktrees new ghost" "and offers to create it instead" || return 0
+    done_ok
+}
+
+t_resume_no_terminal_needs_name() {
+    # SAME EOF DISCIPLINE AS THE SURVEY: no terminal, no name, no attempt to ask
+    # — a spin here would be the same class of bug `ask_name`'s EOF handling
+    # exists to prevent.
+    scenario "resume: no name and no terminal refuses instead of asking" || return 0
+    local repo; repo="$(make_repo res4 main develop)"
+    local rc
+    ( cd "$repo" && with_timeout env AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" \
+        HERDR_PANE_ID="" "$BASH_UNDER_TEST" "$AWT_SH" resume \
+        </dev/null >/dev/null 2>"$TMP/e" ); rc=$?
+    assert_eq 1 "$rc" "exit code" || return 0
+    assert_contains "$(cat "$TMP/e")" "agent-worktrees resume <name>" \
+        "says how to do it non-interactively" || return 0
+    done_ok
+}
+
+t_resume_interactive_menu() {
+    scenario "resume: with no name, lists sessions and enters the chosen one" || return 0
+    local repo; repo="$(make_repo res5 main develop)"
+    awt_run "$repo" new one develop >/dev/null 2>&1
+    local second; second="$(awt_run "$repo" new two develop 2>/dev/null)"
+
+    local out
+    out="$( cd "$repo" && printf '2\n1\n' | AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" \
+        HERDR_PANE_ID="" AWT_ASK=1 AWT_WRAPPER=2 "$BASH_UNDER_TEST" "$AWT_SH" resume 2>"$TMP/e" )"
+    assert_contains "$(cat "$TMP/e")" "Continue in which session?" "the menu was shown" || return 0
+    assert_eq "$second" "$(printf '%s\n' "$out" | sed -n 1p)" \
+        "the second option (picked '2') was entered" || return 0
+    done_ok
+}
+
+t_resume_warns_when_busy() {
+    scenario "resume: another shell already in the worktree gets a confirmation, not a silent entry" || return 0
+    command -v lsof >/dev/null 2>&1 || { dim "    (no lsof here — skipped)"; SKIP=$((SKIP + 1)); return 0; }
+
+    local repo; repo="$(make_repo res6 main develop)"
+    local dir; dir="$(awt_run "$repo" new busy develop 2>/dev/null)"
+
+    ( cd "$dir" && sleep 5 ) &
+    local bg=$!
+    sleep 1
+
+    local out rc
+    out="$( cd "$repo" && with_timeout env AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" \
+        HERDR_PANE_ID="" "$BASH_UNDER_TEST" "$AWT_SH" resume busy \
+        <<< "no" 2>&1 )"; rc=$?
+    kill "$bg" 2>/dev/null; wait "$bg" 2>/dev/null
+
+    assert_contains "$out" "already has this worktree open" "warns before entering" || return 0
+    assert_eq 0 "$rc" "declining aborts with exit 0, same as any other abort" || return 0
+    assert_contains "$out" "Aborted" "and says nothing was entered" || return 0
+    done_ok
+}
+
 t_outside_repo_points_at_one() {
     # The message used to say "change into the project and try again" to somebody
     # standing in the directory that HOLDS the projects — one `cd` away, with the
@@ -854,6 +954,23 @@ STUB
     done_ok
 }
 
+t_wrapper_resume() {
+    # `resume` has to take the SAME branch as `start` and `new` — it also hands
+    # back a directory to `cd` into, and the passthrough branch never `cd`s
+    # anywhere at all.
+    scenario "wrapper: resume takes the cd-and-exec branch, same as start and new" || return 0
+    local d="$TMP/wrap-resume"; mkdir -p "$d/target"
+    cat > "$d/stub" <<STUB
+#!/bin/sh
+printf '%s\n' "$d/target" "plain shell"
+STUB
+    chmod +x "$d/stub"
+    local out
+    out="$(bash -c ". '$FUNC_SH'; AWT_CLI='$d/stub' awt resume somename; pwd" 2>&1)"
+    assert_eq "$(cd "$d/target" && pwd)" "$out" "ends up in the session, no agent run" || return 0
+    done_ok
+}
+
 t_wrapper_passthrough() {
     scenario "wrapper: any other subcommand is passed straight through" || return 0
     local d="$TMP/wrap-pass"; mkdir -p "$d"
@@ -895,6 +1012,111 @@ t_clean() {
     assert_dir "$dirty" "the dirty one is kept" || return 0
     assert_dir "$committed" "the one with commits is kept" || return 0
     assert_contains "$err" "removed 1" "reports one removal" || return 0
+    done_ok
+}
+
+# --------------------------------------------------------------------------
+# `clean -i` — the same safety, a human decides the rest
+# --------------------------------------------------------------------------
+
+t_clean_interactive_needs_terminal() {
+    scenario "clean -i: refuses without a terminal instead of guessing" || return 0
+    local repo; repo="$(make_repo ci1 main develop)"
+    awt_run "$repo" new empty develop >/dev/null 2>&1
+    local rc
+    ( cd "$repo" && with_timeout env AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" \
+        HERDR_PANE_ID="" "$BASH_UNDER_TEST" "$AWT_SH" clean -i \
+        </dev/null >/dev/null 2>"$TMP/e" ); rc=$?
+    assert_eq 1 "$rc" "exit code" || return 0
+    assert_contains "$(cat "$TMP/e")" "needs a terminal" "says why" || return 0
+    done_ok
+}
+
+t_clean_interactive_walks_each_one() {
+    scenario "clean -i: y removes, n keeps, one decision per worktree" || return 0
+    local repo; repo="$(make_repo ci2 main develop)"
+    local a b
+    a="$(awt_run "$repo" new alpha develop 2>/dev/null)"
+    b="$(awt_run "$repo" new bravo develop 2>/dev/null)"
+
+    local out
+    out="$( cd "$repo" && printf 'y\nn\n' | AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" \
+        HERDR_PANE_ID="" AWT_ASK=1 "$BASH_UNDER_TEST" "$AWT_SH" clean -i 2>&1 )"
+    # WHICH of the two gets removed depends on the order `git worktree list`
+    # happens to return, which is not this test's to assume — only that
+    # exactly one decision landed each way.
+    local remaining=0
+    [ -d "$a" ] && remaining=$((remaining + 1))
+    [ -d "$b" ] && remaining=$((remaining + 1))
+    assert_eq 1 "$remaining" "exactly one of the two survives" || return 0
+    assert_contains "$out" "removed 1, kept 1" "and the summary agrees" || return 0
+    done_ok
+}
+
+t_clean_interactive_can_remove_work_with_consent() {
+    # THE WHOLE POINT of the interactive path: automatic `clean` would never
+    # touch this one — it has a commit of its own — but a human who has been
+    # shown that and asked anyway can say yes.
+    scenario "clean -i: a worktree with commits of its own can be removed with consent" || return 0
+    local repo; repo="$(make_repo ci3 main develop)"
+    local committed; committed="$(awt_run "$repo" new committed develop 2>/dev/null)"
+    (
+        cd "$committed" && git config user.email t@example.com && git config user.name Test \
+            && git config commit.gpgsign false \
+            && echo work > work.txt && git add work.txt && git commit -qm "real work"
+    )
+
+    local out
+    out="$( cd "$repo" && printf 'y\n' | AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" \
+        HERDR_PANE_ID="" AWT_ASK=1 "$BASH_UNDER_TEST" "$AWT_SH" clean -i 2>&1 )"
+    assert_no_dir "$committed" "removed despite having commits, because a human said yes" || return 0
+    assert_contains "$out" "1 ahead" "the status line said so before asking" || return 0
+    done_ok
+}
+
+t_clean_interactive_excludes_pwd_and_unowned() {
+    scenario "clean -i: the one you are in, and worktrees this tool did not make, are never offered" || return 0
+    local repo; repo="$(make_repo ci4 main develop)"
+    local here; here="$(awt_run "$repo" new here develop 2>/dev/null)"
+    git -C "$repo" worktree add -q -b manual-topic "$TMP/ci4-manual" develop
+
+    local out
+    out="$( cd "$here" && with_timeout env AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" \
+        HERDR_PANE_ID="" AWT_ASK=1 "$BASH_UNDER_TEST" "$AWT_SH" clean -i \
+        </dev/null 2>&1 )"
+    assert_contains "$out" "you are standing in it" "says why the current one is excluded" || return 0
+    assert_contains "$out" "not a session this tool made" "says why the manual one is excluded" || return 0
+    assert_not_contains "$out" "Remove it?" "nothing was offered to decide on" || return 0
+    assert_dir "$here" "never touched" || return 0
+    assert_dir "$TMP/ci4-manual" "never touched either" || return 0
+    done_ok
+}
+
+t_clean_interactive_stops_on_q() {
+    scenario "clean -i: 'q' stops asking and leaves the rest untouched" || return 0
+    local repo; repo="$(make_repo ci5 main develop)"
+    local one two
+    one="$(awt_run "$repo" new one develop 2>/dev/null)"
+    two="$(awt_run "$repo" new two develop 2>/dev/null)"
+
+    local out
+    out="$( cd "$repo" && printf 'q\n' | AGENT_WORKTREES_NO_HERDR=1 HOME="$FAKE_HOME" \
+        HERDR_PANE_ID="" AWT_ASK=1 "$BASH_UNDER_TEST" "$AWT_SH" clean -i 2>&1 )"
+    assert_dir "$one" "kept — q stopped before either was decided" || return 0
+    assert_dir "$two" "kept — q stopped before either was decided" || return 0
+    assert_contains "$out" "removed 0, kept 0" "nothing was decided either way" || return 0
+    done_ok
+}
+
+t_clean_bad_flag() {
+    scenario "clean: an unrecognised flag is refused with both real options" || return 0
+    local repo; repo="$(make_repo ci6 main develop)"
+    local err rc
+    awt_run "$repo" clean --bogus >/dev/null 2>"$TMP/e"; rc=$?
+    err="$(cat "$TMP/e")"
+    assert_eq 2 "$rc" "exit code" || return 0
+    assert_contains "$err" "No such option for clean: --bogus" "says so" || return 0
+    assert_contains "$err" "agent-worktrees clean -i" "and shows the interactive form" || return 0
     done_ok
 }
 
@@ -1372,6 +1594,12 @@ t_help_is_asked_for
 t_new_enters_the_session
 t_new_without_wrapper_still_prints_a_path
 t_new_stale_wrapper_refused
+t_resume_by_name
+t_resume_without_wrapper
+t_resume_unknown_name
+t_resume_no_terminal_needs_name
+t_resume_interactive_menu
+t_resume_warns_when_busy
 t_naming_strips_the_base_suffix
 t_naming_keeps_a_name_with_nothing_redundant
 t_naming_config_overrides
@@ -1390,9 +1618,16 @@ t_survey_eof
 t_wrapper_shell bash
 t_wrapper_shell zsh
 t_wrapper_plain_shell
+t_wrapper_resume
 t_wrapper_passthrough
 t_wrapper_failure
 t_clean
+t_clean_interactive_needs_terminal
+t_clean_interactive_walks_each_one
+t_clean_interactive_can_remove_work_with_consent
+t_clean_interactive_excludes_pwd_and_unowned
+t_clean_interactive_stops_on_q
+t_clean_bad_flag
 t_read_only_commands
 t_same_branch_lock
 t_memory_symlink

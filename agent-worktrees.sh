@@ -27,10 +27,11 @@
 # USAGE
 #   agent-worktrees                     # SURVEY: base, name, agent (default)
 #   agent-worktrees new <name> [base]   # no questions asked
+#   agent-worktrees resume [name]       # continue in an existing worktree
 #   agent-worktrees list                # what is taken and by whom
 #   agent-worktrees where               # where am I, off what, how far behind
 #   agent-worktrees rehearse            # would pulling the base conflict?
-#   agent-worktrees clean               # remove untouched session worktrees
+#   agent-worktrees clean [-i]          # remove untouched session worktrees
 #   agent-worktrees verify              # is the isolation actually working?
 #
 # Shell integration and installation: see README.md
@@ -426,6 +427,29 @@ choose() {
     done
 }
 
+# SAME MENU, BUT THE ANSWER IS A POSITION, NOT THE LABEL ITSELF. `choose` returns
+# the option text, which every existing caller can safely split on the first
+# word (a branch name, an agent name — neither contains a space). A worktree
+# path can, in principle, so `resume`'s menu needs to map the pick back onto a
+# parallel array of paths exactly, not by re-parsing the printed line.
+choose_idx() {
+    local question="$1"; shift
+    local options=("$@") i pick
+    {
+        printf '\n\033[0;36m%s\033[0m\n' "$question"
+        for i in "${!options[@]}"; do printf '   %d) %s\n' "$((i + 1))" "${options[$i]}"; done
+    } >&2
+    while true; do
+        printf '   choice [1]: ' >&2
+        pick="$(read_line)" || no_more_input
+        pick="${pick:-1}"
+        if [[ "$pick" =~ ^[0-9]+$ ]] && [ "$pick" -ge 1 ] && [ "$pick" -le "${#options[@]}" ]; then
+            printf '%s\n' "$pick"; return 0
+        fi
+        printf '   \033[0;31mno such option\033[0m\n' >&2
+    done
+}
+
 ask_name() {
     local name
     while true; do
@@ -558,8 +582,22 @@ branch_for() {
     printf 'session/%s\n' "$name"
 }
 
+# THE AGENT QUESTION, ASKED IN ONE PLACE — `cmd_start` and `cmd_resume` both
+# ask it the same way: the configured agent first in the menu, everything else
+# installed after it.
+# Two passes rather than prepending in place: expanding an EMPTY array under
+# `set -u` breaks on bash 3.2, which is what macOS ships in /bin/bash.
+pick_agent() {
+    local preferred; preferred="$(config agent 2>/dev/null || echo claude)"
+    local all=() agents=() a
+    while IFS= read -r a; do all+=("$a"); done < <(available_agents)
+    for a in "${all[@]}"; do [[ "$a" == "$preferred" ]] && agents+=("$a"); done
+    for a in "${all[@]}"; do [[ "$a" == "$preferred" ]] || agents+=("$a"); done
+    choose "Which agent should start?" "${agents[@]}"
+}
+
 cmd_start() {
-    local base name agent preferred
+    local base name agent
 
     require_current_wrapper
     require_origin
@@ -572,15 +610,7 @@ cmd_start() {
     # in their head while reading.
     base="$(ask_base)" || exit 1
     name="$(ask_name)" || exit 1
-
-    preferred="$(config agent 2>/dev/null || echo claude)"
-    # Two passes rather than prepending in place: expanding an EMPTY array under
-    # `set -u` breaks on bash 3.2, which is what macOS ships in /bin/bash.
-    local all=() agents=() a
-    while IFS= read -r a; do all+=("$a"); done < <(available_agents)
-    for a in "${all[@]}"; do [[ "$a" == "$preferred" ]] && agents+=("$a"); done
-    for a in "${all[@]}"; do [[ "$a" == "$preferred" ]] || agents+=("$a"); done
-    agent="$(choose "Which agent should start?" "${agents[@]}")"
+    agent="$(pick_agent)"
 
     local previewed_branch
     previewed_branch="$(branch_for "$name" "$base")"
@@ -958,6 +988,33 @@ cmd_rehearse() {
     return 1
 }
 
+# WHICH OF THIS REPOSITORY'S WORKTREES A SHELL IS SITTING IN RIGHT NOW — this is
+# what catches two people working in the same place, and it is the same question
+# `list`, `resume`'s menu and `clean -i`'s status line all need answered.
+#
+# Matched on the name prefix once, which with a prefix of `kamar` would also
+# claim the neighbouring clone `kamar-checkout` — a different repository
+# entirely — as one of this repository's working directories. Asking git which
+# directories are ours is both exact and independent of what they are called.
+busy_worktree_paths() {
+    local busy="" cwds p
+    cwds="$(lsof -a -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | sort -u || true)"
+    while IFS= read -r p; do
+        [[ -n "$p" ]] || continue
+        # A shell inside a subdirectory counts: it is still somebody working there.
+        local c
+        while IFS= read -r c; do
+            [[ -n "$c" ]] || continue
+            if [[ "$c" == "$p" || "$c" == "$p"/* ]]; then
+                busy="${busy}${p}
+"
+                break
+            fi
+        done <<< "$cwds"
+    done <<< "$(worktree_paths)"
+    printf '%s' "$busy" | sort -u
+}
+
 cmd_list() {
     info "Working directories of this repository:"
     git -C "$MAIN" worktree list --porcelain | awk '
@@ -968,33 +1025,57 @@ cmd_list() {
         END            { if (path != "") printf("  %-58s %s\n", path, br) }
     '
 
-    # Which ones a shell is sitting in right now — this is what catches two people
-    # working in the same place.
-    # Matched on the name prefix once, which with a prefix of `kamar` would also
-    # claim the neighbouring clone `kamar-checkout` — a different repository
-    # entirely — as one of this repository's working directories. Asking git
-    # which directories are ours is both exact and independent of what they are
-    # called.
-    local busy="" cwds p
-    cwds="$(lsof -a -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | sort -u || true)"
-    while IFS= read -r p; do
-        [[ -n "$p" ]] || continue
-        # A shell inside a subdirectory counts: it is still somebody working there.
-        while IFS= read -r c; do
-            [[ -n "$c" ]] || continue
-            if [[ "$c" == "$p" || "$c" == "$p"/* ]]; then
-                busy="${busy}${p}
-"
-                break
-            fi
-        done <<< "$cwds"
-    done <<< "$(worktree_paths)"
-    busy="$(printf '%s' "$busy" | sort -u)"
+    local busy; busy="$(busy_worktree_paths)"
     if [[ -n "$busy" ]]; then
         echo
         info "Open in shells:"
         echo "$busy" | sed 's/^/  /'
     fi
+}
+
+# EVERY WORKTREE THAT COULD BE RESUMED — every one but MAIN, filtered to ones
+# still on disk. A `git worktree list` entry can outlive the directory it
+# names until something prunes it, and `-d` is the one check that catches that.
+resumable_worktree_paths() {
+    local p
+    while IFS= read -r p; do
+        [[ -n "$p" && "$p" != "$MAIN" && -d "$p" ]] && printf '%s\n' "$p"
+    done < <(worktree_paths)
+}
+
+# ONE LINE DESCRIBING A WORKTREE'S STATE: dirty or clean, how far it has
+# drifted from its base in each direction, and whether another shell already
+# has it open. Shared by `resume`'s menu and `clean -i`'s overview, so the two
+# do not grow separate descriptions of the same worktree that quietly drift
+# apart from each other.
+#
+# `busy_list` is computed ONCE by the caller and passed in — `lsof` over every
+# open file descriptor on the machine is not something to re-run per row of a
+# list.
+worktree_status_line() { # path busy_list
+    local path="$1" busy_list="$2" branch dirty="clean" state
+    branch="$(git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+    [[ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]] && dirty="uncommitted changes"
+    state="$dirty"
+
+    if is_session_branch "$branch"; then
+        local base ahead behind
+        base="$(base_of "$branch")"
+        if ahead="$(git -C "$MAIN" rev-list --count "$base..$branch" 2>/dev/null)" \
+           && behind="$(git -C "$MAIN" rev-list --count "$branch..$base" 2>/dev/null)"; then
+            state="$state, $ahead ahead / $behind behind $base"
+        else
+            state="$state, base $base no longer resolves"
+        fi
+    else
+        state="$state, not a session this tool made"
+    fi
+
+    case $'\n'"$busy_list"$'\n' in
+        *$'\n'"$path"$'\n'*) state="$state · OPEN IN ANOTHER SHELL" ;;
+    esac
+
+    printf '%s\n' "$state"
 }
 
 # ---------------------------------------------------------------------------
@@ -1023,7 +1104,21 @@ herdr_forget() {
     herdr workspace close "$id" >/dev/null 2>&1 && info "    herdr: closed workspace $id"
 }
 
-cmd_clean() {
+# THE ACTUAL REMOVAL, ONE PLACE. Both the automatic and interactive paths do
+# exactly this once a worktree is decided on, so there is exactly one place
+# that can forget to forget the herdr workspace or leave the branch behind.
+remove_worktree_and_branch() { # path branch
+    local path="$1" branch="$2"
+    git -C "$MAIN" worktree remove "$path" --force >/dev/null 2>&1 || true
+    herdr_forget "$path"
+    # `-d`, not `-D`: a branch with unmerged commits survives. The automatic
+    # path only ever reaches here with zero commits of its own; interactive
+    # mode reaches it with a human's explicit "yes, I know" instead — either
+    # way I would rather git had the last word than my caller's condition.
+    git -C "$MAIN" branch -d "$branch" >/dev/null 2>&1 || true
+}
+
+cmd_clean_auto() {
     info "Looking for worktrees with no changes and no commits of their own…"
     local removed=0
 
@@ -1074,18 +1169,117 @@ cmd_clean() {
             continue
         fi
 
-        git -C "$MAIN" worktree remove "$path" --force >/dev/null 2>&1 || true
-        herdr_forget "$path"
-        # `-d`, not `-D`: a branch with unmerged commits survives. Only branches
-        # without their own commits reach this point, but I would rather git had
-        # the last word than my condition above.
-        git -C "$MAIN" branch -d "$branch" >/dev/null 2>&1 || true
+        remove_worktree_and_branch "$path" "$branch"
         ok "  removed: $path"
         removed=$((removed + 1))
     done < <(worktree_paths)
 
     git -C "$MAIN" worktree prune
     ok "Done — removed $removed."
+}
+
+# ---------------------------------------------------------------------------
+# `clean -i` — THE SAME SAFETY, A HUMAN DECIDES THE REST
+# ---------------------------------------------------------------------------
+# Automatic `clean` only ever touches a worktree with zero changes and zero
+# commits of its own — see "clean is deliberately timid" in the README. That
+# is the right default, but it leaves no path for "yes, I know this one has
+# commits, I already got what I needed from it, remove it" short of `git
+# worktree remove` by hand, off camera from this tool entirely.
+#
+# Interactive mode relaxes exactly that one restriction. It does NOT relax
+# which worktrees are even offered: `MAIN`, the one you are standing in, and
+# anything this tool did not make are excluded here exactly as they are in
+# the automatic path, for the same reasons.
+cmd_clean_interactive() {
+    if ! should_ask; then
+        err "Interactive cleanup needs a terminal to ask in."
+        printf '%s\n' "  agent-worktrees clean" >&2
+        exit 1
+    fi
+
+    local busy; busy="$(busy_worktree_paths)"
+    local paths=() branches=() offer=() reason=() p
+    while IFS= read -r p; do
+        local branch; branch="$(git -C "$p" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+        [[ -n "$branch" ]] || continue
+        paths+=("$p")
+        branches+=("$branch")
+        if [[ "$p" == "$PWD" || "$PWD" == "$p"/* ]]; then
+            offer+=("0"); reason+=(" — you are standing in it")
+        elif ! is_session_branch "$branch"; then
+            # No reason repeated here: `worktree_status_line` already says "not
+            # a session this tool made" for exactly this case, right there in
+            # the same line.
+            offer+=("0"); reason+=("")
+        else
+            offer+=("1"); reason+=("")
+        fi
+    done < <(resumable_worktree_paths)
+
+    if [ "${#paths[@]}" -eq 0 ]; then
+        info "No worktrees besides the main one — nothing to look at."
+        return 0
+    fi
+
+    info "Every worktree but the main one:"
+    local i line
+    for i in "${!paths[@]}"; do
+        line="$(basename "${paths[$i]}")  —  $(worktree_status_line "${paths[$i]}" "$busy")"
+        if [[ "${offer[$i]}" == "0" ]]; then
+            printf '  %s  (not offered%s)\n' "$line" "${reason[$i]}" >&2
+        else
+            printf '  %s\n' "$line" >&2
+        fi
+    done
+    echo >&2
+
+    info "Going through the rest one at a time — Enter or n skips, y removes, q stops:"
+    local removed=0 kept=0
+    for i in "${!paths[@]}"; do
+        [[ "${offer[$i]}" == "1" ]] || continue
+        local path="${paths[$i]}" branch="${branches[$i]}"
+        printf '\n  %s\n' "$(basename "$path")  —  $(worktree_status_line "$path" "$busy")" >&2
+        printf '  Remove it? [y/N/q]: ' >&2
+        local answer
+        if ! answer="$(read_line)"; then
+            warn "  no more input — stopping, nothing further was asked about."
+            break
+        fi
+        case "$answer" in
+            y|Y)
+                remove_worktree_and_branch "$path" "$branch"
+                ok "  removed: $path"
+                removed=$((removed + 1))
+                ;;
+            q|Q)
+                warn "  stopped — nothing further was asked about."
+                break
+                ;;
+            *)
+                info "  kept: $path"
+                kept=$((kept + 1))
+                ;;
+        esac
+    done
+
+    git -C "$MAIN" worktree prune
+    ok "Done — removed $removed, kept $kept."
+}
+
+cmd_clean() {
+    case "${1:-}" in
+        -i|--interactive) cmd_clean_interactive ;;
+        "")               cmd_clean_auto ;;
+        *)
+            err "No such option for clean: $1"
+            {
+                printf '%s\n' "  agent-worktrees clean       remove worktrees with no changes and no commits"
+                printf '%s\n' "  agent-worktrees clean -i    review each one yourself, step by step"
+            } >&2
+            exit 2
+            ;;
+    esac
 }
 
 cmd_where() {
@@ -1339,16 +1533,118 @@ cmd_new_and_enter() {
     printf '%s\n' "$dir"
 }
 
+# ---------------------------------------------------------------------------
+# GOING BACK INTO A SESSION THAT ALREADY EXISTS
+# ---------------------------------------------------------------------------
+# `new <existing-name>` already re-enters a worktree as a side effect of its
+# "is this name taken" check, but that is not an entry point you can browse —
+# you have to already know the name. `resume` is that entry point: given a
+# name it behaves like `new <name>` without the base question, because there
+# is nothing left to create; given none, it lists what exists and asks.
+#
+# THE MENU IS NOT LIMITED TO SESSIONS THIS TOOL MADE. `clean`'s ownership
+# guard exists to keep deletion from reaching a stranger's worktree by
+# accident; resuming only changes directory, so there is nothing here for that
+# guard to protect against.
+pick_resumable_worktree() {
+    local paths=() labels=() p busy
+    busy="$(busy_worktree_paths)"
+    while IFS= read -r p; do
+        paths+=("$p")
+        labels+=("$(basename "$p")  —  $(worktree_status_line "$p" "$busy")")
+    done < <(resumable_worktree_paths)
+
+    if [ "${#paths[@]}" -eq 0 ]; then
+        err "No previous sessions to resume."
+        printf '%s\n' "Start one: agent-worktrees" >&2
+        return 1
+    fi
+
+    local idx; idx="$(choose_idx "Continue in which session?" "${labels[@]}")" || return 1
+    printf '%s\n' "${paths[$((idx - 1))]}"
+}
+
+# TWO AGENTS IN ONE DIRECTORY is the exact failure this whole tool exists to
+# prevent, so resuming into a worktree another shell already has open gets a
+# confirmation of its own rather than sliding through unremarked. The signal
+# is a heuristic — a stray shell left open counts the same as a running
+# agent — so this warns rather than refuses outright.
+warn_if_resuming_busy() {
+    local dir="$1" busy
+    busy="$(busy_worktree_paths)"
+    case $'\n'"$busy"$'\n' in
+        *$'\n'"$dir"$'\n'*) ;;
+        *) return 0 ;;
+    esac
+    warn "Another shell already has this worktree open."
+    warn "Starting an agent here too puts two agents in the same directory —"
+    warn "the exact thing this tool exists to prevent."
+    printf '   Continue anyway? Type yes: ' >&2
+    local confirm; confirm="$(read_line)" || true
+    if [[ "$confirm" != "yes" ]]; then
+        warn "Aborted — nothing was entered."
+        exit 0
+    fi
+}
+
+cmd_resume() {
+    local name="${1:-}" dir
+
+    require_current_wrapper
+
+    if [[ -n "$name" ]]; then
+        dir="$PARENT/$PREFIX-$name"
+        if [[ ! -d "$dir" ]] || ! is_worktree_of_ours "$dir"; then
+            err "No such session: $name"
+            local existing; existing="$(resumable_worktree_paths)"
+            if [[ -n "$existing" ]]; then
+                printf '%s\n' "Sessions that do exist:" >&2
+                local p
+                while IFS= read -r p; do printf '  %s\n' "$(basename "$p")" >&2; done <<< "$existing"
+            fi
+            printf '\n%s\n' "Start a new one instead:  agent-worktrees new $name" >&2
+            exit 1
+        fi
+    else
+        if ! should_ask; then
+            err "No session named, and there is no terminal to choose one in."
+            printf '%s\n' "  agent-worktrees resume <name>" >&2
+            exit 1
+        fi
+        dir="$(pick_resumable_worktree)" || exit 1
+    fi
+
+    warn_if_resuming_busy "$dir"
+    ok "Resuming $(basename "$dir")."
+
+    if [[ -n "${AWT_WRAPPER:-}" ]]; then
+        local agent extra
+        if [[ -n "$name" ]]; then
+            agent="$(session_agent)"
+        else
+            agent="$(pick_agent)"
+        fi
+        extra="$(config agent_args 2>/dev/null || true)"
+        # shellcheck disable=SC2086
+        printf '%s\n' "$dir" "$agent" $extra
+        return 0
+    fi
+
+    printf '%s\n' "$dir"
+}
+
 usage() {
     cat <<HELP
 agent-worktrees — one agent, one working directory
 
   agent-worktrees                     SURVEY: asks for base, name and agent
   agent-worktrees new <name> [base]   no questions asked
+  agent-worktrees resume [name]       continue in an existing worktree, or pick one
   agent-worktrees list                every working directory and who is in it
   agent-worktrees where               where you are, off what, how far behind
   agent-worktrees rehearse            would pulling the base conflict? (changes nothing)
-  agent-worktrees clean               remove worktrees with no changes and no commits
+  agent-worktrees clean [-i]          remove worktrees with no changes and no commits
+                                      (-i: review each one yourself, step by step)
   agent-worktrees verify              check that the isolation actually works
   agent-worktrees help                this text
 
@@ -1401,10 +1697,11 @@ unknown_command() {
 case "${1:-start}" in
     start|"")       cmd_start ;;
     new)            shift; cmd_new_and_enter "$@" ;;
+    resume)         shift; cmd_resume "$@" ;;
     rehearse)       cmd_rehearse ;;
     verify)         cmd_verify ;;
     list)           cmd_list ;;
-    clean)          cmd_clean ;;
+    clean)          shift; cmd_clean "$@" ;;
     where)          cmd_where ;;
     help|-h|--help) usage ;;   # asked for, so: stdout, exit 0
     *)              unknown_command "$1" ;;

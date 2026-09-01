@@ -70,16 +70,17 @@ by accident. Session memory is symlinked to the main repository's.
 ```
 awt                      survey: base, name, agent
 awt new <name> [base]    no questions asked
+awt resume [name]        continue in an existing worktree, or pick one
 awt list                 every working directory and who is in it
 awt where                where you are, off what, how far behind
 awt rehearse             would pulling the base conflict? (changes nothing)
-awt clean                remove worktrees with no changes and no commits
+awt clean [-i]           remove worktrees with no changes and no commits
 awt verify               check that the isolation actually works
 awt help                 the above
 ```
 
-**Both `awt` and `awt new` leave you standing in the session with the agent
-running.** The survey asks for a base, a name and an agent. `new` is handed the
+**`awt`, `awt new` and `awt resume` all leave you standing in the session with
+the agent running.** The survey asks for a base, a name and an agent. `new` is handed the
 name and takes the agent from `.agent-worktrees.conf` (or `claude`) — but it
 **asks which branch to cut from**, because being given a name is not being told
 what to branch off, and guessing is how a hotfix ends up carrying a development
@@ -152,6 +153,38 @@ Repositories directly below here:
   cd kamar-checkout
 ```
 
+### `resume` — going back into a session you already started
+
+`new <existing-name>` has always re-entered a worktree that is already there
+rather than recreating it — but that only helps if you remember the exact
+name. `resume` is the entry point for when you do not:
+
+```
+$ awt resume
+
+Continue in which session?
+   1) kamar-finanse  —  clean, 2 ahead / 0 behind origin/develop
+   2) kamar-urgent   —  uncommitted changes, 0 ahead / 1 behind origin/develop
+   choice [1]: 2
+
+Which agent should start?
+   1) claude
+   2) plain shell
+   choice [1]:
+```
+
+With a name it behaves exactly like `new <name>`, minus the base question —
+there is nothing left to create, so there is nothing to ask: `awt resume
+finanse`. Run without the shell function, it prints the session path on stdout
+and nothing else, the same contract `new` already keeps.
+
+The menu is not limited to sessions this tool made — resuming only changes
+directory, so `clean`'s ownership guard has nothing here to protect against.
+It **is** limited by whether another shell already has the worktree open: that
+gets flagged before the confirmation, because starting a second agent in a
+directory that already has one is the exact failure this tool exists to
+prevent.
+
 ### `rehearse` — the one worth knowing about
 
 "Can I safely pull the base?" comes up constantly, and answering it with a real
@@ -168,14 +201,45 @@ halfway through, complaining about overwriting local changes.
 
 ### `clean` is deliberately timid
 
-It touches **only** directories carrying the session prefix, and only those with
-neither changes nor commits of their own. If it cannot count commits for any
-reason, the directory stays.
+It touches **only** worktrees whose branch this tool actually created, and
+only those with neither changes nor commits of their own. If it cannot count
+commits for any reason, the directory stays.
 
 The cost is asymmetric: a worktree left behind is some disk space, a worktree
 deleted is somebody's work. An earlier version walked every worktree in the
 repository and removed branches that were none of its business. That is why the
 condition is this narrow.
+
+### `clean -i` — when the answer is "yes, I know, remove it anyway"
+
+Automatic `clean` will never touch a worktree with commits or changes of its
+own — that is the point of it being timid. `-i` (or `--interactive`) is the
+other half: it shows every worktree but the main one, with the same status
+line `resume` uses, marks the ones automatic `clean` would never touch anyway
+(the one you are standing in, anything this tool did not make) as not offered,
+and then goes through what is left **one at a time**:
+
+```
+$ awt clean -i
+
+Every worktree but the main one:
+  kamar-finanse    —  clean, 2 ahead / 0 behind origin/develop
+  kamar-checkout   —  clean, not a session this tool made  (not offered)
+
+Going through the rest one at a time — Enter or n skips, y removes, q stops:
+
+  kamar-finanse  —  clean, 2 ahead / 0 behind origin/develop
+  Remove it? [y/N/q]:
+```
+
+The default answer is always "skip" — Enter, `n`, or the input running out all
+keep it — for the same asymmetric-cost reason automatic `clean` is timid in
+the first place. `y` removes that one worktree right there, the same removal
+automatic `clean` uses. `q` stops asking and leaves everything not yet decided
+exactly where it was. What interactive mode relaxes is the automatic path's
+"no changes, no commits" rule, since a human who has been shown the status and
+asked anyway is the whole reason to have an interactive mode at all — it does
+**not** relax which worktrees are offered in the first place.
 
 ## Configuration
 
